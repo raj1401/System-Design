@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consistent Hashing: Scaling Distributed Systems Without the Rebalancing Storm</title>
+<meta name="description" content="Consistent hashing solves the problem of remapping nearly all keys when a node joins or leaves a cluster, by placing nodes and keys on a hash ring so only a small fraction of data ever moves. This article covers the ring, virtual nodes, formal guarantees, and real systems like Dynamo, Cassandra, and Google's bounded-load variant.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  /* Article-specific additions, built from the same variables */
+  .props-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .prop-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .prop-card .name {
+    font-weight: 600;
+    font-size: 0.9em;
+    margin-bottom: 4px;
+  }
+  .prop-card .name.balance { color: var(--accent); }
+  .prop-card .name.monotonicity { color: var(--accent2); }
+  .prop-card .name.spread { color: var(--accent3); }
+  .prop-card .name.load { color: var(--accent4); }
+  .prop-card p { font-size: 0.86em; color: var(--text-dim); margin-bottom: 0; }
+
+  .btn {
+    background: var(--surface2);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.85em;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: block;
+    margin: 0 auto 16px;
+    transition: background 0.15s ease;
+  }
+  .btn:hover { background: #6c8cff22; }
+  .stat-line {
+    text-align: center;
+    font-size: 0.85em;
+    color: var(--text-dim);
+    margin-top: 12px;
+  }
+  .stat-line strong { color: var(--accent4); }
+  @media (max-width: 600px) {
+    .props-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Consistent Hashing: Scaling Distributed Systems Without the Rebalancing Storm</h1>
+<p class="subtitle">How a 1997 MIT paper on web caching quietly became the load-distribution backbone of Dynamo, Cassandra, and modern CDNs.</p>
+<p class="meta">July 29, 2026 &middot; 5 min read</p>
+
+<h2>The concept, in a nutshell</h2>
+<p>
+Every distributed cache, database, or load balancer has the same basic problem: given a key and a set of <code>N</code> servers, decide which server owns that key. The naive answer, <code>hash(key) % N</code>, works fine until <code>N</code> changes. The moment you add or remove a single node, almost every key gets remapped to a different server, triggering a stampede of cache misses or data migrations across the whole cluster.
+</p>
+<p>
+
+Consistent hashing is a special kind of hashing that changes minimally as the range of the function changes
+, introduced by 
+David Karger and colleagues in 1997 to solve the problem of Web caching
+. Instead of hashing keys into a flat array of buckets, it hashes both servers and keys onto points on a shared circular space — a "ring" — so that adding or removing a server only disturbs the small slice of keys that were adjacent to it.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> 
+with 5 nodes, roughly 80% of keys are remapped when you add just one more node, and with 100 nodes, adding a single node remaps roughly 99% of keys
+ under plain modulo hashing. At terabyte scale that's not a rebalance, it's an outage. Consistent hashing turns that into a localized, cheap operation.
+</div>
+
+<h2>The underlying mechanism</h2>
+<h3>From modulo to the ring</h3>
+<p>
+Picture a circle representing every possible hash output, from <code>0</code> to <code>2^32 - 1</code> (or larger). Each server is hashed to one or more points on this circle. To find the owner of a key, hash the key, land on the circle, and walk clockwise until you hit the first server point — that server owns the key. 
+Cassandra, for instance, maps every node to one or more tokens on this continuous ring and defines ownership by hashing a key onto the ring and then walking it in one direction, so that when the number of nodes changes, only a small fraction of the keys need to move
+. Compare that to naive hashing, where 
+on average only k/n keys need to be remapped under consistent hashing, versus a near-total remap under modulo schemes
+.
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — The Hash Ring: Keys Owned by the Next Node Clockwise</h4>
+<svg viewBox="0 0 400 400" width="400" height="400" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <circle cx="200" cy="200" r="150" fill="none" stroke="#2e3345" stroke-width="2"/>
+  <!-- direction arrow -->
+  <path d="M 200 45 A 150 150 0 0 1 230 50" fill="none" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#8b90a0"/>
+    </marker>
+  </defs>
+  <text x="255" y="45" fill="#8b90a0" font-size="11">clockwise lookup</text>
+
+  <!-- Node A -->
+  <circle cx="251.3" cy="59.0" r="10" fill="#6c8cff"/>
+  <text x="266" y="55" fill="#6c8cff" font-size="13" font-weight="600">A</text>
+  <!-- Node B -->
+  <circle cx="347.8" cy="226.1" r="10" fill="#4ecdc4"/>
+  <text x="360" y="230" fill="#4ecdc4" font-size="13" font-weight="600">B</text>
+  <!-- Node C -->
+  <circle cx="148.7" cy="341.0" r="10" fill="#ff6b9d"/>
+  <text x="130" y="365" fill="#ff6b9d" font-size="13" font-weight="600">C</text>
+  <!-- Node D -->
+  <circle cx="70.1" cy="125.0" r="10" fill="#ffd93d"/>
+  <text x="35" y="115" fill="#ffd93d" font-size="13" font-weight="600">D</text>
+
+  <!-- Keys -->
+  <circle cx="226.1" cy="52.3" r="5" fill="#6c8cff"/>
+  <text x="220" y="38" fill="#e1e4ed" font-size="10">k6</text>
+
+  <circle cx="329.9" cy="125.0" r="5" fill="#4ecdc4"/>
+  <text x="335" y="118" fill="#e1e4ed" font-size="10">k1</text>
+
+  <circle cx="296.5" cy="314.9" r="5" fill="#ff6b9d"/>
+  <text x="303" y="313" fill="#e1e4ed" font-size="10">k2</text>
+
+  <circle cx="85.1" cy="296.5" r="5" fill="#ffd93d"/>
+  <text x="55" y="300" fill="#e1e4ed" font-size="10">k3</text>
+
+  <circle cx="52.3" cy="226.1" r="5" fill="#ffd93d"/>
+  <text x="20" y="222" fill="#e1e4ed" font-size="10">k4</text>
+
+  <circle cx="148.7" cy="59.0" r="5" fill="#6c8cff"/>
+  <text x="120" y="50" fill="#e1e4ed" font-size="10">k5</text>
+
+  <text x="200" y="205" fill="#8b90a0" font-size="11" text-anchor="middle">hash space: 0 … 2³²−1</text>
+</svg>
+</div>
+
+<h3>Virtual nodes: smoothing the distribution</h3>
+<p>
+With only one point per physical server, the ring can be badly unbalanced — one server might end up owning a huge arc while another owns a sliver. The fix, used since the earliest production deployments, is virtual nodes: 
+instead of mapping a node to a single point on the circle, each node gets assigned to multiple points in the ring, a concept Dynamo calls "virtual nodes"
+. Replication then follows naturally: 
+nodes A, B, and C can form the preference list for a key, with the shaded arc indicating the key range for which those three nodes are responsible
+.
+</p>
+<p>
+Apache Cassandra adopted the same idea: 
+virtual nodes were introduced in Cassandra 1.2, inspired directly by Amazon Dynamo's approach, which had used virtual nodes from its inception
+. Cassandra's default partitioner then turns a row's partition key into a ring position: 
+it uses the MurmurHash function to create a 64-bit hash of the partition key
+, which is fast and non-cryptographic — ideal since consistent hashing needs speed and uniformity, not collision resistance.
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Adding a Node Only Disturbs Its Neighboring Arc</h4>
+<button class="btn" id="toggleNode">Add Node E to the ring</button>
+<svg viewBox="0 0 400 400" width="400" height="400" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif" id="ringSvg">
+  <circle cx="200" cy="200" r="150" fill="none" stroke="#2e3345" stroke-width="2"/>
+
+  <circle cx="251.3" cy="59.0" r="10" fill="#6c8cff"/>
+  <text x="266" y="55" fill="#6c8cff" font-size="13" font-weight="600">A</text>
+
+  <circle cx="347.8" cy="226.1" r="10" fill="#4ecdc4"/>
+  <text x="360" y="230" fill="#4ecdc4" font-size="13" font-weight="600">B</text>
+
+  <circle cx="148.7" cy="341.0" r="10" fill="#ff6b9d"/>
+  <text x="130" y="365" fill="#ff6b9d" font-size="13" font-weight="600">C</text>
+
+  <circle cx="70.1" cy="125.0" r="10" fill="#ffd93d"/>
+  <text x="35" y="115" fill="#ffd93d" font-size="13" font-weight="600">D</text>
+
+  <!-- new node E, hidden by default -->
+  <g id="nodeE" opacity="0">
+    <circle cx="59.0" cy="251.3" r="10" fill="#e1e4ed" stroke="#8b90a0" stroke-width="2" stroke-dasharray="2,2"/>
+    <text x="15" y="270" fill="#e1e4ed" font-size="13" font-weight="600">E (new)</text>
+  </g>
+
+  <circle cx="226.1" cy="52.3" r="5" fill="#6c8cff"/>
+  <text x="220" y="38" fill="#e1e4ed" font-size="10">k6</text>
+
+  <circle cx="329.9" cy="125.0" r="5" fill="#4ecdc4"/>
+  <text x="335" y="118" fill="#e1e4ed" font-size="10">k1</text>
+
+  <circle cx="296.5" cy="314.9" r="5" fill="#ff6b9d"/>
+  <text x="303" y="313" fill="#e1e4ed" font-size="10">k2</text>
+
+  <!-- k3 changes color when E appears -->
+  <circle cx="85.1" cy="296.5" r="5" fill="#ffd93d" id="k3dot"/>
+  <text x="55" y="300" fill="#e1e4ed" font-size="10">k3</text>
+
+  <circle cx="52.3" cy="226.1" r="5" fill="#ffd93d"/>
+  <text x="20" y="222" fill="#e1e4ed" font-size="10">k4</text>
+
+  <circle cx="148.7" cy="59.0" r="5" fill="#6c8cff"/>
+  <text x="120" y="50" fill="#e1e4ed" font-size="10">k5</text>
+
+  <text x="200" y="205" fill="#8b90a0" font-size="11" text-anchor="middle" id="ringLabel">4 nodes, 6 keys</text>
+</svg>
+<p class="stat-line" id="statLine">Only <strong>0 of 6</strong> keys would move if a node is added here.</p>
+</div>
+
+<script>
+  (function () {
+    var toggled = false;
+    var btn = document.getElementById('toggleNode');
+    var nodeE = document.getElementById('nodeE');
+    var k3dot = document.getElementById('k3dot');
+    var label = document.getElementById('ringLabel');
+    var stat = document.getElementById('statLine');
+    btn.addEventListener('click', function () {
+      toggled = !toggled;
+      if (toggled) {
+        nodeE.setAttribute('opacity', '1');
+        k3dot.setAttribute('fill', '#e1e4ed');
+        k3dot.setAttribute('stroke', '#8b90a0');
+        k3dot.setAttribute('stroke-width', '2');
+        label.textContent = '5 nodes, 6 keys';
+        stat.innerHTML = 'Only <strong>1 of 6</strong> keys (k3) moved from D to E — the rest stayed put.';
+        btn.textContent = 'Remove Node E';
+      } else {
+        nodeE.setAttribute('opacity', '0');
+        k3dot.setAttribute('fill', '#ffd93d');
+        k3dot.removeAttribute('stroke');
+        label.textContent = '4 nodes, 6 keys';
+        stat.innerHTML = 'Only <strong>0 of 6</strong> keys would move if a node is added here.';
+        btn.textContent = 'Add Node E to the ring';
+      }
+    });
+  })();
+</script>
+
+<h3>The four formal guarantees</h3>
+<p>
+Karger's original paper didn't just describe a ring diagram — it defined precise properties a consistent hash function must satisfy:
+</p>
+<div class="props-grid">
+  <div class="prop-card">
+    <div class="name balance">Balance</div>
+    <p>
+Keys distribute evenly across all nodes; no single node should be disproportionately loaded.
+</p>
+  </div>
+  <div class="prop-card">
+    <div class="name monotonicity">Monotonicity</div>
+    <p>
+When a new node joins, keys only move to the new node — keys never reshuffle between existing nodes.
+</p>
+  </div>
+  <div class="prop-card">
+    <div class="name spread">Spread</div>
+    <p>
+Across different client views of the cluster, a key maps to a small number of distinct nodes.
+</p>
+  </div>
+  <div class="prop-card">
+    <div class="name load">Load</div>
+    <p>
+No node receives more than its fair share of keys, regardless of which subset of nodes a client sees.
+</p>
+  </div>
+</div>
+
+<h3>Beyond the ring: jump hashing and bounded loads</h3>
+<p>
+The ring isn't the only way to achieve consistency. Google's <em>jump consistent hash</em> takes a different approach entirely: 
+it is a fast, minimal-memory consistent hash algorithm expressible in about five lines of code that, compared to Karger's algorithm, requires no storage, is faster, and does a better job evenly dividing the key space
+. Its tradeoff is that 
+buckets must be numbered sequentially, making it better suited to data storage than distributed web caching
+ — you can't cleanly remove an arbitrary node from the middle of the range.
+</p>
+<p>
+A separate problem is the "hot key": even a perfectly balanced ring can send disproportionate traffic to one node if that node's keys happen to be popular. 
+Consistent hashing's load balancing is no better than a random assignment of clients to servers, so with n clients and n servers we'd expect some servers to be overloaded with far more than their share — Google's bounded-load variant instead guarantees a max load of only 2 while moving just a constant number of clients per update
+. This wasn't just theory: 
+Vimeo implemented the algorithm in HAProxy and used it for load balancing, decreasing cache bandwidth by a factor of almost 8
+, and 
+Google itself deployed it in Cloud Pub/Sub, observing a substantial improvement in uniformity
+.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Modulo Hashing (hash % N)</h4>
+    <ul>
+      <li>Trivial to implement, O(1) lookup</li>
+      <li>
+With 5 nodes, ~80% of keys remap when adding just one node
+</li>
+      <li>
+With 100 nodes, ~99% of keys remap on a single addition
+</li>
+      <li>Fine only for fixed-size, rarely-resized clusters</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">Consistent Hashing (Ring)</h4>
+    <ul>
+      <li>
+Only ~k/n keys move on average when a node changes
+</li>
+      <li>Needs virtual nodes for good balance, adding memory overhead</li>
+      <li>O(log n) lookup via binary search over sorted node positions</li>
+      <li>Ideal for elastic, frequently-resized clusters</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Amazon Dynamo / DynamoDB</div>
+    <div class="desc">
+Dynamo assigns each node to multiple points on the ring via "virtual nodes"
+, the pattern that inspired most modern implementations.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Apache Cassandra</div>
+    <div class="desc">
+Nodes are mapped to tokens on a continuous ring; ownership is found by walking clockwise from a key's hash
+, minimizing data movement on topology changes.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">CDN Edge Routing</div>
+    <div class="desc">
+The original 1997 motivation for consistent hashing was Web caching
+ — routing a URL request to the same edge cache consistently, even as cache servers come and go.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Google Cloud Pub/Sub &amp; Vimeo/HAProxy</div>
+    <div class="desc">
+Google deployed bounded-load consistent hashing in Cloud Pub/Sub
+, while 
+Vimeo used it in HAProxy to cut cache bandwidth by nearly 8x
+.</div>
+  </div>
+</div>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://doi.org/10.1145/258533.258660" target="_blank" rel="noopener">Karger, D. et al. "Consistent Hashing and Random Trees: Distributed Caching Protocols for Relieving Hot Spots on the World Wide Web." STOC 1997.</a></li>
+<li><a href="https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf" target="_blank" rel="noopener">DeCandia, G. et al. "Dynamo: Amazon's Highly Available Key-value Store." SOSP 2007.</a></li>
+<li><a href="https://arxiv.org/abs/1406.2294" target="_blank" rel="noopener">Lamping, J. &amp; Veach, E. "A Fast, Minimal Memory, Consistent Hash Algorithm." arXiv:1406.2294, 2014.</a></li>
+<li><a href="https://arxiv.org/abs/1608.01350" target="_blank" rel="noopener">Mirrokni, V., Thorup, M. &amp; Zadimoghaddam, M. "Consistent Hashing with Bounded Loads." arXiv:1608.01350, 2016.</a></li>
+<li><a href="https://research.google/blog/consistent-hashing-with-bounded-loads/" target="_blank" rel="noopener">Mirrokni, V. &amp; Zadimoghaddam, M. "Consistent Hashing with Bounded Loads." Google Research Blog, 2017.</a></li>
+<li><a href="https://cassandra.apache.org/doc/3.11/cassandra/architecture/dynamo.html" target="_blank" rel="noopener">Apache Cassandra Documentation: "Dynamo" (partitioning &amp; consistent hashing architecture).</a></li>
+<li><a href="https://www.baeldung.com/cassandra-replication-partitioning" target="_blank" rel="noopener">Baeldung: "Replication Strategies and Partitioning in Cassandra."</a></li>
+<li><a href="https://web.stanford.edu/class/cs168/l/l1.pdf" target="_blank" rel="noopener">Stanford CS168 Lecture Notes: "Introduction and Consistent Hashing."</a></li>
+<li><a href="https://thelastpickle.com/blog/2021/01/29/impacts-of-changing-the-number-of-vnodes.html" target="_blank" rel="noopener">The Last Pickle: "The Impacts of Changing the Number of VNodes in Apache Cassandra."</a></li>
+</ol>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>io_uring: The Ring-Buffer Interface Reshaping Linux I/O</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="A deep dive into io_uring, the Linux kernel interface that uses shared memory ring buffers to submit and complete I/O with minimal syscalls, covering its architecture, polling modes, and real-world adoption.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  /* Extra elements, styled with existing variables only */
+  .step-track {
+    display: flex;
+    gap: 8px;
+    margin: 16px 0 24px;
+    flex-wrap: wrap;
+  }
+  .step-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.8em;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .step-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: #6c8cff1a;
+  }
+  .step-caption {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-top: 14px;
+    min-height: 1.4em;
+  }
+  table.opcode-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.85em;
+  }
+  table.opcode-table th, table.opcode-table td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+  }
+  table.opcode-table th {
+    background: var(--surface2);
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  table.opcode-table td { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>io_uring: The Ring-Buffer Interface Reshaping Linux I/O</h1>
+<p class="subtitle">How two shared memory rings and an optional kernel poller let applications do I/O with (almost) zero syscalls.</p>
+<p class="meta">July 29, 2026 &middot; 5 min read</p>
+
+<h2>What is io_uring?</h2>
+<p>
+<code>io_uring</code> is a Linux kernel interface, introduced by Jens Axboe, 
+for providing the kernel with a schedule of system calls, and receiving the results as they're generated.
+
+It replaces the classic pattern of "call a syscall, block or poll for readiness, call another syscall" with two ring buffers that user space and the kernel both read and write directly, without copying.
+</p>
+<p>
+
+The submission and completion queues are shared between userspace and the kernel, which eliminates the need to copy data when initiating and completing I/O.
+
+The application places a <em>submission queue entry</em> (SQE) describing an operation — read, write, accept, send, even <code>mkdir</code> — onto the submission queue (SQ), and the kernel eventually pushes back a matching <em>completion queue entry</em> (CQE) onto the completion queue (CQ). 
+In contrast to epoll's readiness-based polling approach, io_uring employs a completion-based model, notifying applications after operations complete rather than when they become possible, using two memory-mapped ring buffers with configurable capacity: the Submission Queue and the Completion Queue.
+
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> every traditional syscall costs a user↔kernel mode transition, and interfaces like <code>epoll</code> or POSIX AIO still require one syscall per readiness check or submission. At millions of operations per second, that overhead dominates. io_uring's entire premise is to amortize — or eliminate — that cost by making the kernel and application communicate through memory instead of trapping into the kernel every time.
+</div>
+
+<h2>Mechanics: rings, indirection, and polling</h2>
+<h3>The two rings</h3>
+<p>
+Setup happens through <code>io_uring_setup(2)</code>, which allocates the rings and returns a file descriptor; the app then <code>mmap</code>s that descriptor into its address space. 
+The general programming model is to set up shared buffers with io_uring_setup(2) and mmap(2), mapping into user space shared buffers for the SQ and CQ; you place I/O requests you want to make on the SQ, while the kernel places the results on the CQ, and for every I/O request you create an SQE and add it to the tail of the SQ.
+
+</p>
+<p>
+Interestingly, the SQ is not a direct ring of SQEs. 
+While the completion queue ring directly indexes the shared array of CQEs, the submission ring has an indirection array in between — the submission side ring buffer is an index into this array, which in turn contains the index into the SQEs.
+ That extra layer lets applications reorder or reuse SQE slots flexibly, including embedding requests inside their own data structures.
+</p>
+<p>
+Completions, by contrast, are simple and guaranteed one-to-one with submissions: 
+there is a completion queue event added by the kernel for each submission queue entry that is submitted — there is exactly one CQE added to the completion queue as a result of the kernel processing an SQE
+ (multishot operations are the deliberate exception). Because different devices finish at different speeds, ordering isn't preserved: 
+it is not necessary that submitted requests complete in the same order they show up as CQEs — CQEs can arrive in any order as they become available, whichever operation finishes first.
+
+</p>
+
+<h3>Telling the kernel: io_uring_enter</h3>
+<p>
+Normally, after writing SQEs, the application still needs one lightweight syscall to notify the kernel: 
+once you place one or more SQEs onto the SQ, you need to let the kernel know by calling io_uring_enter(2), which is also capable of waiting for a specified count of events to complete.
+ That's already far cheaper than issuing a syscall per operation, since one <code>io_uring_enter</code> call can submit a whole batch and simultaneously reap a batch of completions.
+</p>
+
+<h3>SQPOLL: removing the syscall entirely</h3>
+<p>
+The more radical mode sets <code>IORING_SETUP_SQPOLL</code>, which spins up a dedicated kernel thread that watches the SQ itself. 
+When this flag is specified, a kernel thread is created to perform submission queue polling, enabling an application to issue I/O without ever context switching into the kernel — by filling in new SQEs and watching the CQ, the application can submit and reap I/Os without doing a single system call.
+ This thread is a real, named kernel thread — 
+the name of this thread is io_uring-sq
+ — and it can even be pinned to a CPU with <code>IORING_SETUP_SQ_AFF</code>.
+</p>
+<p>
+Because a spinning kernel thread wastes CPU when idle, it backs off automatically: 
+to avoid wasting too much CPU while the io_uring instance is inactive, the kernel side thread will automatically go to sleep when it has been idle for a while, and when that happens it will set IORING_SQ_NEED_WAKEUP in the SQ ring flags member — the application then cannot rely on the kernel automatically finding new entries
+ and must issue one explicit <code>io_uring_enter</code> to wake it back up.
+</p>
+
+<h3>Overflow, feature flags, and registered resources</h3>
+<p>
+Because the CQ has fixed capacity, a burst of completions can outrun the consumer. Modern kernels handle this gracefully: 
+if the CQ ring overflows — more entries are generated than fit in the ring before the application can reap them — then if the kernel supports IORING_FEAT_NODROP the ring enters a CQ ring overflow state
+ instead of silently losing events. io_uring also lets applications pre-register file descriptors and buffers with the kernel once, up front: 
+registration creates long-lived kernel references, reducing per-I/O overhead
+ versus passing raw pointers and fds on every request.
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Submission &amp; Completion Ring Architecture</h4>
+<svg viewBox="0 0 760 380" width="100%" height="380" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="20" y="20" width="330" height="150" rx="10" fill="#232733" stroke="#2e3345"/>
+  <text x="185" y="42" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">User Space Application</text>
+  <text x="185" y="62" fill="#8b90a0" font-size="11" text-anchor="middle">writes SQEs · reads CQEs</text>
+  <rect x="45" y="80" width="120" height="70" rx="6" fill="#141620" stroke="#6c8cff"/>
+  <text x="105" y="102" fill="#6c8cff" font-size="11" text-anchor="middle" font-weight="600">SQ tail++</text>
+  <text x="105" y="120" fill="#8b90a0" font-size="10" text-anchor="middle">writes new SQE</text>
+  <text x="105" y="136" fill="#8b90a0" font-size="10" text-anchor="middle">indices</text>
+  <rect x="195" y="80" width="120" height="70" rx="6" fill="#141620" stroke="#4ecdc4"/>
+  <text x="255" y="102" fill="#4ecdc4" font-size="11" text-anchor="middle" font-weight="600">CQ head++</text>
+  <text x="255" y="120" fill="#8b90a0" font-size="10" text-anchor="middle">reads finished</text>
+  <text x="255" y="136" fill="#8b90a0" font-size="10" text-anchor="middle">CQEs</text>
+
+  <rect x="410" y="20" width="330" height="150" rx="10" fill="#232733" stroke="#2e3345"/>
+  <text x="575" y="42" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">Linux Kernel</text>
+  <text x="575" y="62" fill="#8b90a0" font-size="11" text-anchor="middle">block layer · net stack · fs</text>
+  <rect x="435" y="80" width="120" height="70" rx="6" fill="#141620" stroke="#6c8cff"/>
+  <text x="495" y="102" fill="#6c8cff" font-size="11" text-anchor="middle" font-weight="600">SQ head++</text>
+  <text x="495" y="120" fill="#8b90a0" font-size="10" text-anchor="middle">consumes SQE,</text>
+  <text x="495" y="136" fill="#8b90a0" font-size="10" text-anchor="middle">dispatches I/O</text>
+  <rect x="585" y="80" width="120" height="70" rx="6" fill="#141620" stroke="#4ecdc4"/>
+  <text x="645" y="102" fill="#4ecdc4" font-size="11" text-anchor="middle" font-weight="600">CQ tail++</text>
+  <text x="645" y="120" fill="#8b90a0" font-size="10" text-anchor="middle">posts CQE on</text>
+  <text x="645" y="136" fill="#8b90a0" font-size="10" text-anchor="middle">completion</text>
+
+  <rect x="180" y="220" width="400" height="80" rx="10" fill="#1a1d27" stroke="#ffd93d" stroke-dasharray="4 3"/>
+  <text x="380" y="245" fill="#ffd93d" font-size="12" font-weight="600" text-anchor="middle">mmap-shared memory region</text>
+  <text x="380" y="265" fill="#8b90a0" font-size="10.5" text-anchor="middle">SQ ring · CQ ring · SQE array — no copy, no syscall to read/write</text>
+  <text x="380" y="283" fill="#8b90a0" font-size="10.5" text-anchor="middle">only io_uring_enter() crosses the boundary (or nothing, with SQPOLL)</text>
+
+  <path d="M105 150 L 380 220" stroke="#6c8cff" stroke-width="1.5" fill="none" opacity="0.6"/>
+  <path d="M255 150 L 380 220" stroke="#4ecdc4" stroke-width="1.5" fill="none" opacity="0.6"/>
+  <path d="M495 150 L 380 220" stroke="#6c8cff" stroke-width="1.5" fill="none" opacity="0.6"/>
+  <path d="M645 150 L 380 220" stroke="#4ecdc4" stroke-width="1.5" fill="none" opacity="0.6"/>
+
+  <path d="M340 60 L 400 60" stroke="#ff6b9d" stroke-width="2" fill="none" marker-end="url(#arrow1)"/>
+  <text x="370" y="50" fill="#ff6b9d" font-size="10" text-anchor="middle">io_uring_enter()</text>
+  <defs>
+    <marker id="arrow1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#ff6b9d"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Life of a Request: Classic Syscalls vs. io_uring</h4>
+<div class="step-track" id="stepTrack"></div>
+<svg viewBox="0 0 760 220" width="100%" height="220" id="stepSvg" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <line x1="60" y1="60" x2="700" y2="60" stroke="#2e3345" stroke-width="2"/>
+  <text x="60" y="45" fill="#8b90a0" font-size="11">App (user space)</text>
+  <line x1="60" y1="160" x2="700" y2="160" stroke="#2e3345" stroke-width="2"/>
+  <text x="60" y="180" fill="#8b90a0" font-size="11">Kernel</text>
+  <g id="stepMarks"></g>
+</svg>
+<p class="step-caption" id="stepCaption">Click a step above to compare traditional read()/epoll vs io_uring SQPOLL.</p>
+</div>
+
+<script>
+(function(){
+  const steps = [
+    {
+      label: "1. Submit",
+      classic: [{x:120,y:60,r:'#ff6b9d',t:'read() syscall'},{x:120,y:160,r:'#ff6b9d',t:'trap into kernel'}],
+      uring:   [{x:120,y:60,r:'#6c8cff',t:'write SQE in ring'},{x:120,y:160,r:'#232733',t:'(no trap needed)'}],
+      caption: "Classic: read() traps into the kernel immediately. io_uring: app just writes an SQE into shared memory — no trap yet."
+    },
+    {
+      label: "2. Dispatch",
+      classic: [{x:300,y:160,r:'#ff6b9d',t:'kernel issues I/O'}],
+      uring:   [{x:300,y:160,r:'#4ecdc4',t:'SQPOLL thread sees SQE'}],
+      caption: "Classic: kernel dispatches the I/O as part of the same syscall. io_uring: the SQPOLL kernel thread notices the new SQE on its own and dispatches it."
+    },
+    {
+      label: "3. Wait",
+      classic: [{x:480,y:60,r:'#ff6b9d',t:'thread blocks / epoll_wait()'}],
+      uring:   [{x:480,y:60,r:'#4ecdc4',t:'app does other work'}],
+      caption: "Classic: the app blocks in read() or calls epoll_wait() again. io_uring: app is free to do other work; no waiting syscall required."
+    },
+    {
+      label: "4. Complete",
+      classic: [{x:640,y:160,r:'#ffd93d',t:'kernel wakes thread'},{x:640,y:60,r:'#ffd93d',t:'syscall returns'}],
+      uring:   [{x:640,y:160,r:'#ffd93d',t:'CQE posted to ring'},{x:640,y:60,r:'#ffd93d',t:'app reads CQE, no syscall'}],
+      caption: "Classic: the kernel wakes the thread and the syscall returns data. io_uring: the kernel posts a CQE into the shared ring; the app just reads it from memory."
+    }
+  ];
+  const track = document.getElementById('stepTrack');
+  const svg = document.getElementById('stepSvg');
+  const marks = document.getElementById('stepMarks');
+  const caption = document.getElementById('stepCaption');
+  steps.forEach((s,i)=>{
+    const btn = document.createElement('button');
+    btn.className = 'step-btn' + (i===0?' active':'');
+    btn.textContent = s.label;
+    btn.onclick = () => render(i);
+    track.appendChild(btn);
+  });
+  function render(i){
+    [...track.children].forEach((b,j)=>b.classList.toggle('active', j===i));
+    marks.innerHTML = '';
+    const s = steps[i];
+    function drawGroup(arr, dy, tag){
+      arr.forEach(pt=>{
+        const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y+dy); c.setAttribute('r', 8);
+        c.setAttribute('fill', pt.r);
+        marks.appendChild(c);
+        const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+        t.setAttribute('x', pt.x); t.setAttribute('y', pt.y+dy+ (dy<0?-14:24));
+        t.setAttribute('fill', '#e1e4ed'); t.setAttribute('font-size','10.5');
+        t.setAttribute('text-anchor','middle');
+        t.textContent = pt.t;
+        marks.appendChild(t);
+      });
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+      lbl.setAttribute('x', 700); lbl.setAttribute('y', dy===0?95:200);
+      lbl.setAttribute('fill','#8b90a0'); lbl.setAttribute('font-size','10');
+      lbl.setAttribute('text-anchor','end');
+      lbl.textContent = tag;
+      marks.appendChild(lbl);
+    }
+    drawGroup(s.classic, -35, 'traditional syscall path');
+    drawGroup(s.uring, 35, 'io_uring / SQPOLL path');
+    caption.textContent = s.caption;
+  }
+  render(0);
+})();
+</script>
+
+<h3>A note on completion paths inside the kernel</h3>
+<p>
+Not every request finishes instantly. Internally, io_uring dispatches work along different paths depending on whether the operation can complete immediately or must block: 
+io_uring provides three execution paths — inline completion, asynchronous execution via the poll set, and a fallback to worker threads for blocking operations — and an optional SQPoll thread can submit requests without syscalls.
+ That worker-thread fallback isn't free: 
+issuing NOPs handled by io_worker threads added an average overhead of 7.3 microseconds compared to inline execution, resulting from offloading to a separate thread and synchronization between them.
+
+</p>
+
+<table class="opcode-table">
+<tr><th>Concept</th><th>Purpose</th></tr>
+<tr><td><code>IORING_SETUP_SQPOLL</code></td><td>Kernel thread polls SQ so the app avoids <code>io_uring_enter</code> almost entirely</td></tr>
+<tr><td><code>IORING_SETUP_IOPOLL</code></td><td>Busy-poll completions on a device that supports polled I/O, for lowest latency</td></tr>
+<tr><td><code>IORING_FEAT_NODROP</code></td><td>Buffers overflowed CQEs internally instead of dropping them</td></tr>
+<tr><td>Registered buffers/files</td><td>Pin resources with the kernel once to cut per-request setup cost</td></tr>
+<tr><td>Multishot ops</td><td>One SQE can generate many CQEs (e.g. repeated accepts) without resubmission</td></tr>
+</table>
+
+<h2>How it compares to older interfaces</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">epoll / POSIX AIO / libaio</h4>
+    <ul>
+      <li>
+Synchronous I/O forces programs to block until operations complete, wasting CPU cycles, and asynchronous alternatives like libaio came with scattered interfaces and inconsistent behavior.
+</li>
+      <li>
+These interfaces bring overhead from frequent system calls and memory copies, and offer limited support for non-storage I/O such as sockets.
+</li>
+      <li>readiness-based: app is told "you may act now," then still issues the syscall</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">io_uring</h4>
+    <ul>
+      <li>
+A unified interface integrates storage, network, and other system calls into one framework, with fully asynchronous execution allowing applications to perform useful work while I/O completes in the background.
+</li>
+      <li>completion-based: kernel tells the app only once work is actually done</li>
+      <li>SQPOLL / IOPOLL modes can remove syscalls from the hot path almost entirely</li>
+    </ul>
+  </div>
+</div>
+
+<p>
+It's worth being honest about the gains, though: naively swapping io_uring in for epoll without redesigning the surrounding code barely moves the needle. 
+A naive swap of io_uring for epoll or libaio with no architectural change yields roughly 1.06x-1.10x end-to-end — often noise in A/B tests — while code engineered for rings, with registered buffers, batching, and zero-copy send/receive, can reach up to roughly 2.3x on network shuffle workloads and 2.5x with zero-copy receive.
+ The lesson: io_uring is a different programming model, not a drop-in replacement — you have to batch and register resources to see the real win.
+</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Storage engines &amp; databases</div>
+    <div class="desc">High-performance storage systems use io_uring's <code>IORING_SETUP_IOPOLL</code> and registered buffers to drive NVMe devices at near-hardware speed without per-I/O syscall overhead.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Network servers</div>
+    <div class="desc">Multishot accept/recv operations and zero-copy send let event-driven servers replace epoll loops with a single ring, cutting syscalls under heavy connection churn.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Language & runtime integrations</div>
+    <div class="desc">Runtimes such as <code>tokio-uring</code> for Rust and userspace wrappers for languages like Zig expose io_uring as their async I/O backend on Linux.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Cross-platform async I/O</div>
+    <div class="desc">Libraries such as libuv are evolving to treat io_uring as a first-class backend alongside epoll and IOCP, reflecting its role as a general async I/O primitive.</div>
+  </div>
+</div>
+
+<h2>Caveats worth knowing</h2>
+<p>
+SQPOLL is a privileged operation on most kernels — 
+note that setting up an io_uring instance with IORING_SETUP_SQPOLL is a privileged operation.
+ Buffer lifetime rules also differ subtly by opcode: pointers used purely at submission time (like a timeout struct) can be freed right after submission, but 
+pointers to a buffer used as part of a IORING_OP_WRITE or IORING_OP_READ operation must remain valid until completion.
+ Getting this wrong is a classic source of use-after-free bugs in io_uring-based code, and it's part of why the interface, while fast, demands careful engineering.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+  <li><a href="https://kernel.dk/io_uring.pdf" target="_blank" rel="noopener">Jens Axboe, "Efficient IO with io_uring" (kernel.dk)</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man7/io_uring.7.html" target="_blank" rel="noopener">io_uring(7) — Linux manual page (man7.org)</a></li>
+  <li><a href="https://man.archlinux.org/man/io_uring.7.en" target="_blank" rel="noopener">io_uring(7) — Arch Linux manual pages</a></li>
+  <li><a href="https://unixism.net/loti/what_is_io_uring.html" target="_blank" rel="noopener">Lord of the io_uring — What is io_uring?</a></li>
+  <li><a href="https://unixism.net/loti/low_level.html" target="_blank" rel="noopener">Lord of the io_uring — The Low-level io_uring Interface</a></li>
+  <li><a href="https://unixism.net/loti/ref-iouring/io_uring_setup.html" target="_blank" rel="noopener">Lord of the io_uring — io_uring_setup reference</a></li>
+  <li><a href="https://unixism.net/loti/ref-liburing/cqe.html" target="_blank" rel="noopener">Lord of the io_uring — CQE reference</a></li>
+  <li><a href="https://unixism.net/loti/tutorial/sq_poll.html" target="_blank" rel="noopener">Lord of the io_uring — Submission Queue Polling tutorial</a></li>
+  <li><a href="https://lwn.net/Articles/776703/" target="_blank" rel="noopener">Jonathan Corbet, "Ringing in a new asynchronous I/O API" (LWN.net, 2019)</a></li>
+  <li><a href="https://blogs.oracle.com/linux/an-introduction-to-the-io-uring-asynchronous-io-framework" target="_blank" rel="noopener">Oracle Linux Blog — An Introduction to the io_uring Asynchronous I/O Framework</a></li>
+  <li><a href="https://arxiv.org/html/2512.04859v1" target="_blank" rel="noopener">Jasny et al., "io_uring for High-Performance DBMSs: When and How to Use It" (arXiv)</a></li>
+  <li><a href="https://nick-black.com/dankwiki/index.php/Io_uring" target="_blank" rel="noopener">dankwiki — io_uring notes</a></li>
+  <li><a href="https://deepwiki.com/axboe/liburing" target="_blank" rel="noopener">DeepWiki — axboe/liburing overview</a></li>
+  <li><a href="https://hexmos.com/freedevtools/man-pages/library-functions/standard-io-buffering/io-uring-queue-init/" target="_blank" rel="noopener">io_uring_queue_init(3) manual page</a></li>
+</ol>
+</div>
+
+</body>
+</html>

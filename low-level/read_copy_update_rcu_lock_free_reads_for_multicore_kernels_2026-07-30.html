@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Read-Copy-Update (RCU): Lock-Free Reads for Multicore Kernels</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="A technical tour of RCU, the Linux kernel synchronization mechanism that lets readers traverse data structures without locks by deferring reclamation until a grace period elapses.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  .cpu-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .cpu-label { font-size: 0.78em; color: var(--text-dim); width: 70px; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }
+  .qs-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 0.75em;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .qs-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>Read-Copy-Update (RCU): Lock-Free Reads for a Multicore World</h1>
+<p class="subtitle">How the Linux kernel lets thousands of readers walk a data structure with zero locks, zero atomics, and zero waiting &mdash; by making writers do all the work instead.</p>
+<p class="meta">July 30, 2026 &middot; 5 min read</p>
+
+<h2>The Concept in Brief</h2>
+<p>
+
+Read-Copy Update (RCU) is a synchronization mechanism optimized for read-mostly data, where the key insight is that readers need not acquire any lock, perform atomic instructions, or execute memory barriers on most architectures.
+
+
+It was added to the Linux kernel in October of 2002
+ and 
+was invented by McKenney and Slingwine as a synchronization mechanism that has been part of the Linux kernel since then.
+
+</p>
+<p>
+Traditional locking forces readers and writers to fight over the same mutual-exclusion primitive. 
+In contrast with conventional locking primitives that ensure mutual exclusion among concurrent threads regardless of whether they be readers or updaters, or with reader-writer locks that allow concurrent reads but not in the presence of updates, RCU supports concurrency between a single updater and multiple readers.
+ RCU achieves this by never mutating data in place while a reader might be looking at it. Instead, an updater builds a new version of the data, atomically swaps in a pointer to it, and only reclaims the old version after it can prove no reader could still be using it.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> Lock contention is one of the biggest scalability killers on many-core machines. RCU sidesteps the problem entirely for the read path &mdash; the most common operation on structures like routing tables or the dentry cache &mdash; so read-side cost stays flat no matter how many cores are hammering the data structure simultaneously.
+</div>
+
+<h2>Under the Hood: Removal, Grace Periods, and Reclamation</h2>
+<p>
+
+The basic idea behind RCU is to split updates into "removal" and "reclamation" phases. The removal phase removes references to data items within a data structure, possibly by replacing them with references to new versions, and can run concurrently with readers because modern CPUs guarantee that readers will see either the old or the new version rather than a partially updated reference. The reclamation phase does the work of reclaiming the data items removed during the removal phase, and because reclaiming can disrupt any readers concurrently referencing those items, it must not start until readers no longer hold references to them.
+
+</p>
+<p>
+Concretely, the update sequence is: 
+copy the data to be changed, modify the copy, publish the new version atomically, wait for a grace period until all pre-existing readers have finished, and finally free the old version.
+
+</p>
+
+<h3>Quiescent States and the Grace Period</h3>
+<p>
+The hard problem is step four: how does an updater know every reader that might have seen the old pointer is done with it? 
+The updater cannot rely on readers giving any indication when they are done, but just as with spinlocks, RCU readers are not permitted to block, switch to user-mode execution, or enter the idle loop &mdash; so as soon as a CPU is seen passing through any of these three states, that CPU is known to have exited any previous RCU read-side critical sections.
+ Each such observation is called a <strong>quiescent state</strong>; once every CPU has passed through at least one, a full <strong>grace period</strong> has elapsed and it is safe to reclaim memory. 
+So if we remove an item from a linked list and then wait until all CPUs have switched context, executed in user mode, or executed in the idle loop, we can safely free up that item.
+
+</p>
+<p>
+This is exposed to kernel code through primitives like <code>rcu_read_lock()</code> / <code>rcu_read_unlock()</code> to bound a read-side critical section, and <code>synchronize_rcu()</code> or <code>call_rcu()</code> for updaters. 
+RCU's grace-period guarantee allows updaters to wait for the completion of all pre-existing RCU read-side critical sections, and an RCU read-side critical section begins with the marker rcu_read_lock() and ends with rcu_read_unlock(); these markers may be nested, and RCU treats a nested set as one big critical section.
+
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Lifecycle of an RCU-Protected Update</h4>
+<svg viewBox="0 0 760 300" width="100%" height="300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <!-- stage 1: original list -->
+  <text x="90" y="30" fill="#8b90a0" font-size="12" text-anchor="middle">1. Original list</text>
+  <rect x="30" y="45" width="50" height="34" rx="6" fill="#232733" stroke="#2e3345"/>
+  <text x="55" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">A</text>
+  <line x1="80" y1="62" x2="105" y2="62" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow1)"/>
+  <rect x="105" y="45" width="50" height="34" rx="6" fill="#232733" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="130" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">B(old)</text>
+  <line x1="155" y1="62" x2="180" y2="62" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow1)"/>
+  <rect x="180" y="45" width="50" height="34" rx="6" fill="#232733" stroke="#2e3345"/>
+  <text x="205" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">C</text>
+
+  <!-- stage 2: publish new -->
+  <text x="380" y="30" fill="#8b90a0" font-size="12" text-anchor="middle">2. Copy + publish (atomic pointer write)</text>
+  <rect x="300" y="45" width="50" height="34" rx="6" fill="#232733" stroke="#2e3345"/>
+  <text x="325" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">A</text>
+  <line x1="350" y1="62" x2="375" y2="62" stroke="#6c8cff" stroke-width="2" marker-end="url(#arrow2)"/>
+  <rect x="375" y="45" width="55" height="34" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="402" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">B(new)</text>
+  <line x1="430" y1="62" x2="455" y2="62" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow1)"/>
+  <rect x="455" y="45" width="50" height="34" rx="6" fill="#232733" stroke="#2e3345"/>
+  <text x="480" y="66" fill="#e1e4ed" font-size="12" text-anchor="middle">C</text>
+
+  <!-- dangling old, still referenced by in-flight reader -->
+  <rect x="375" y="100" width="55" height="34" rx="6" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="402" y="121" fill="#ff6b9d" font-size="11" text-anchor="middle">B(old)</text>
+  <text x="470" y="121" fill="#ff6b9d" font-size="10">still held by reader R1</text>
+  <line x1="380" y1="79" x2="390" y2="100" stroke="#ff6b9d" stroke-width="1" stroke-dasharray="2 2"/>
+
+  <!-- stage 3: grace period -->
+  <text x="620" y="30" fill="#8b90a0" font-size="12" text-anchor="middle">3. Grace period elapses</text>
+  <rect x="570" y="45" width="140" height="34" rx="6" fill="#141620" stroke="#ffd93d" stroke-width="1.5"/>
+  <text x="640" y="66" fill="#ffd93d" font-size="11" text-anchor="middle">wait for all CPUs' QS</text>
+
+  <!-- timeline -->
+  <line x1="30" y1="200" x2="710" y2="200" stroke="#2e3345" stroke-width="2"/>
+  <circle cx="60" cy="200" r="4" fill="#6c8cff"/>
+  <text x="60" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">update begins</text>
+  <circle cx="240" cy="200" r="4" fill="#4ecdc4"/>
+  <text x="240" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">pointer swapped</text>
+  <circle cx="450" cy="200" r="4" fill="#ffd93d"/>
+  <text x="450" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">grace period runs</text>
+  <circle cx="640" cy="200" r="4" fill="#ff6b9d"/>
+  <text x="640" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">reclaim / free(old)</text>
+
+  <text x="370" y="260" fill="#e1e4ed" font-size="12" text-anchor="middle" font-weight="600">Readers always see a fully-formed A→B→C list — never a torn structure.</text>
+  <text x="370" y="280" fill="#8b90a0" font-size="11" text-anchor="middle">Old memory is freed only once no CPU could still hold a reference to it.</text>
+
+  <defs>
+    <marker id="arrow1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b90a0"/></marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>Tree RCU and Memory Ordering</h3>
+<p>
+On large systems tracking a quiescent state from every CPU one-by-one doesn't scale, so modern Linux uses <strong>Tree RCU</strong>, which organizes CPUs into a combining tree of <code>rcu_node</code> structures so that grace-period bookkeeping is distributed rather than funneled through a single global lock. Beyond scalability, RCU grace periods double as a powerful ordering primitive: 
+RCU grace periods provide extremely strong memory-ordering guarantees for non-idle non-offline code — any code that happens after the end of a given grace period is guaranteed to see the effects of all accesses prior to the beginning of that grace period that are within RCU read-side critical sections, and symmetrically for code before the grace period.
+ This leads to the memorable description that 
+since RCU-sched read-side critical sections include any region of code for which preemption is disabled, and each machine instruction can be thought of as a tiny region of preemption-disabled code, one can think of synchronize_rcu() as smp_mb() on steroids.
+
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Grace Period as "All CPUs Passed a Quiescent State"</h4>
+<svg viewBox="0 0 700 230" width="100%" height="230" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="350" y="20" fill="#8b90a0" font-size="12" text-anchor="middle">Each CPU must pass through a quiescent state before the grace period completes</text>
+  <g>
+    <text x="20" y="55" fill="#8b90a0" font-size="11">CPU0</text>
+    <line x1="70" y1="50" x2="650" y2="50" stroke="#2e3345" stroke-width="6" stroke-linecap="round"/>
+    <line x1="70" y1="50" x2="260" y2="50" stroke="#6c8cff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="260" cy="50" r="6" fill="#4ecdc4"/>
+    <line x1="260" y1="50" x2="650" y2="50" stroke="#4ecdc4" stroke-width="6" stroke-linecap="round" opacity="0.35"/>
+  </g>
+  <g>
+    <text x="20" y="100" fill="#8b90a0" font-size="11">CPU1</text>
+    <line x1="70" y1="95" x2="650" y2="95" stroke="#2e3345" stroke-width="6" stroke-linecap="round"/>
+    <line x1="70" y1="95" x2="430" y2="95" stroke="#6c8cff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="430" cy="95" r="6" fill="#4ecdc4"/>
+    <line x1="430" y1="95" x2="650" y2="95" stroke="#4ecdc4" stroke-width="6" stroke-linecap="round" opacity="0.35"/>
+  </g>
+  <g>
+    <text x="20" y="145" fill="#8b90a0" font-size="11">CPU2</text>
+    <line x1="70" y1="140" x2="650" y2="140" stroke="#2e3345" stroke-width="6" stroke-linecap="round"/>
+    <line x1="70" y1="140" x2="540" y2="140" stroke="#6c8cff" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="540" cy="140" r="6" fill="#4ecdc4"/>
+    <line x1="540" y1="140" x2="650" y2="140" stroke="#4ecdc4" stroke-width="6" stroke-linecap="round" opacity="0.35"/>
+  </g>
+  <line x1="540" y1="30" x2="540" y2="160" stroke="#ffd93d" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="540" y="180" fill="#ffd93d" font-size="11" text-anchor="middle">grace period ends here</text>
+  <text x="380" y="210" fill="#8b90a0" font-size="11" text-anchor="middle">(last CPU's context switch / idle / user-mode transition = its quiescent state)</text>
+</svg>
+</div>
+
+<h2>Reader Patterns and Reference Counting</h2>
+<p>
+A common real-world pattern combines RCU lookup with ordinary reference counting: 
+given a Process ID number, find_vpid() searches for the struct pid in a radix tree while rcu_read_lock is held throughout, ensuring that any objects found will exist long enough for find_get_pid to increment the object's reference counter, after which rcu_read_lock may be dropped because the object is now protected by the reference counter.
+ When the process exits, 
+its struct pid object is freed by calling free_pid, which first removes the object from the radix tree making it inaccessible to new callers, then uses call_rcu to wait for an RCU grace period before dropping a reference to the object.
+ This RCU-plus-refcount idiom appears throughout the kernel wherever lookups must be fast and lock-free but object lifetime still needs precise tracking.
+</p>
+<p>
+For readers that must sleep inside their critical section &mdash; something plain RCU forbids &mdash; the kernel provides <strong>SRCU</strong> (Sleepable RCU). 
+SRCU grace periods are slower than regular RCU grace periods because the kernel must wait for all SRCU read-side critical sections to complete rather than simply waiting for all CPUs to pass through a quiescent state, so it should be used only when blocking inside the read-side critical section is genuinely required.
+ There are also expedited variants: 
+Linux kernels will sometimes execute synchronize_rcu_expedited() to obtain a faster grace period
+ at the cost of more IPI traffic, and polling APIs such as <code>get_state_synchronize_rcu()</code> and <code>poll_state_synchronize_rcu()</code> let a caller check whether a grace period has already elapsed without blocking at all, useful 
+for use even from NMI handlers.
+
+</p>
+
+<h2>RCU vs. Alternatives</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">RCU</h4>
+    <ul>
+      <li>Readers: no locks, no atomics, near-zero overhead</li>
+      <li>Writers: copy, publish, defer free until grace period</li>
+      <li>Unbounded number of concurrent readers scale linearly</li>
+      <li>Reclamation latency, not throughput, is the cost</li>
+      <li>Readers may see the old <em>or</em> new version, never a torn one</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Reader-Writer Lock</h4>
+    <ul>
+      <li>Readers still take a shared lock — cache-line bouncing under contention</li>
+      <li>Writers can starve, or starve readers, depending on policy</li>
+      <li>In-place mutation; no extra memory for old/new copies</li>
+      <li>Simpler mental model, worse multicore scalability</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent4)">Seqlock</h4>
+    <ul>
+      <li>Readers retry if a writer ran concurrently (sequence counter)</li>
+      <li>No blocking, but readers can spin/retry under heavy writes</li>
+      <li>Not safe for pointer-based structures readers might free</li>
+      <li>Good fit for small, fixed-size data (e.g. <code>jiffies</code>, time)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent)">Hazard Pointers</h4>
+    <ul>
+      <li>Per-thread reader announces the pointer it's using</li>
+      <li>Reclaimer scans announcements instead of waiting for a grace period</li>
+      <li>Popular in userspace lock-free structures (no kernel-wide GP)</li>
+      <li>More per-read bookkeeping than RCU's near-zero-cost reads</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Networking</div>
+    <div class="desc">Routing table and forwarding-information-base lookups, which need to stay fast even while routes are updated — one of the <span></span> classic examples cited in kernel documentation.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Filesystem</div>
+    <div class="desc">
+The virtual filesystem (VFS) uses RCU heavily to achieve scalability
+, most notably in RCU-walk path lookups that traverse the dentry cache without taking locks.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Process Management</div>
+    <div class="desc">PID lookups in <code>find_vpid()</code> use RCU-protected radix tree traversal combined with reference counting to keep <code>struct pid</code> objects alive just long enough.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">NMI Handlers</div>
+    <div class="desc">Because RCU read-side critical sections need no locks or blocking, they can safely run inside non-maskable interrupt handlers where almost nothing else is safe.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Module & Table Lists</div>
+    <div class="desc">Kernel module lists and other read-mostly linked structures are traversed via <code>list_for_each_entry_rcu</code> without ever blocking a concurrent unload.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Userspace RCU</div>
+    <div class="desc">
+LGPL implementations of user-level RCU are available via liburcu
+, bringing the same technique to databases and userspace lock-free data structures.</div>
+  </div>
+</div>
+
+<div class="callout">
+<strong>Try it mentally:</strong> Imagine 64 CPUs all walking the same linked list to answer packet-routing queries, while one CPU occasionally updates a route. With a lock, every reader serializes on that lock's cache line. With RCU, the readers never touch a shared cache line at all — the update's cost (waiting for a grace period) is paid once per batch of updates, not once per read.
+</div>
+
+<h2>Trade-offs to Keep in Mind</h2>
+<p>
+RCU is not free — it shifts cost from readers to writers and to memory footprint. Because old versions must be kept alive until a grace period completes, 
+RCU batches many synchronize_rcu and call_rcu requests into a single grace-period computation, trading a higher latency for a lower average per-call cost, and Linux can satisfy more than 1,000 such calls in a single batch.
+ This means RCU shines for read-mostly workloads but is a poor fit when updates are frequent or when the update itself cannot be expressed as an atomic pointer replacement.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://www.kernel.org/doc/html/next/RCU/whatisRCU.html">What is RCU? — "Read, Copy, Update" — The Linux Kernel documentation</a></li>
+<li><a href="https://docs.kernel.org/6.2/RCU/rcu.html">RCU Concepts — The Linux Kernel documentation</a></li>
+<li><a href="https://docs.kernel.org/RCU/Design/Requirements/Requirements.html">A Tour Through RCU's Requirements — The Linux Kernel documentation</a></li>
+<li><a href="https://docs.kernel.org/RCU/Design/Memory-Ordering/Tree-RCU-Memory-Ordering.html">A Tour Through TREE_RCU's Grace-Period Memory Ordering</a></li>
+<li><a href="https://lwn.net/Articles/262464/">What is RCU, Fundamentally? — LWN.net</a></li>
+<li><a href="https://lwn.net/Articles/988638/">The RCU API, 2024 Edition — LWN.net</a></li>
+<li><a href="https://dl.acm.org/doi/10.1147/sj.472.0221">The read-copy-update mechanism for supporting real-time applications on shared-memory multiprocessor systems with Linux — IBM Systems Journal</a></li>
+<li><a href="https://dl.acm.org/doi/pdf/10.1145/3421473.3421481">RCU Usage In the Linux Kernel: Eighteen Years Later — Paul E. McKenney</a></li>
+<li><a href="https://pdos.csail.mit.edu/6.828/2025/readings/rcu-decade-later.pdf">RCU Usage In the Linux Kernel: One Decade Later — Paul E. McKenney</a></li>
+<li><a href="https://link.springer.com/article/10.1007/s10009-019-00514-6">Stateless model checking of the Linux kernel's read–copy update (RCU) — STTT / Springer</a></li>
+<li><a href="https://paulmckrcu.wordpress.com/">Paul E. McKenney's blog</a></li>
+<li><a href="https://liburcu.org/">liburcu — userspace RCU library</a></li>
+</ol>
+</div>
+
+</body>
+</html>

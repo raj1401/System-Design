@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rate Limiting Algorithms: Token Bucket, Leaky Bucket & Sliding Windows</title>
+<meta name="description" content="A tour of the algorithms that keep APIs from falling over: token bucket, leaky bucket, fixed and sliding windows, and how systems like Cloudflare and Stripe run them at global scale.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  /* page-specific additions, reusing existing variables only */
+  table.algo-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.85em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  table.algo-table th, table.algo-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  table.algo-table th {
+    background: var(--surface2);
+    color: var(--accent2);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.78em;
+    letter-spacing: 0.6px;
+  }
+  table.algo-table tr:last-child td { border-bottom: none; }
+  table.algo-table td { color: var(--text-dim); }
+  table.algo-table td strong { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Rate Limiting Algorithms: Token Bucket, Leaky Bucket &amp; Sliding Windows</h1>
+<p class="subtitle">How distributed systems decide, in microseconds, whether to say "yes" or "429" to every incoming request.</p>
+<p class="meta">August 2, 2026 &middot; 5 min read</p>
+
+<h2>What rate limiting actually solves</h2>
+<p>
+
+Rate limiting is a foundational control in API security, abuse prevention, and distributed systems reliability, determining how systems allocate finite capacity across users, services, and regions.
+
+Every backend has a breaking point — a database connection pool, a CPU budget, a third-party quota — and rate limiting is the mechanism that keeps one noisy client, one retry storm, or one scraper from consuming it all.
+</p>
+<p>
+
+Without rate limiting, a single client making excessive requests can impact service availability for other users, so throttling ensures equitable resource distribution across all clients.
+
+When a limit is exceeded, the server typically responds with the HTTP status defined for exactly this purpose: 
+RFC 6585 defines the 429 Too Many Requests status code
+, often paired with a <code>Retry-After</code> header telling the client when to come back.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> The rate limiter is one of the few components that sits in the hot path of literally every request, at every scale — a bug here either lets an attacker through or throttles legitimate paying customers. Choosing the wrong algorithm is invisible until the day traffic spikes.
+</div>
+
+<h2>The five canonical algorithms</h2>
+<p>
+
+Five algorithms dominate production practice and are not interchangeable — each trades memory, burst tolerance, and accuracy differently, a set codified for a generation of engineers by Alex Xu's System Design Interview as the canonical reference family of Fixed Window Counter, Sliding Window Log, Sliding Window Counter, Token Bucket, and Leaky Bucket.
+
+</p>
+
+<h3>Fixed window counter</h3>
+<p>
+
+A fixed-window counter counts the number of requests received within a fixed time window, such as one minute, and once the maximum is reached, additional requests are rejected until the next window begins — an algorithm that is easy to implement and effective against DDoS attacks but may limit legitimate users.
+
+Its well-known flaw: 
+the naive count-and-reset approach has a real flaw, since nothing stops all N requests from landing in the first 10 milliseconds of a window, followed by silence, followed by another N crammed into the last 10ms of the next window.
+
+</p>
+
+<h3>Sliding window log</h3>
+<p>
+
+The sliding window log fixes the boundary-burst problem by storing timestamps of requests and calculating the exact number inside the time window — the downside being that every request needs a timestamp stored somewhere, which at scale becomes a lot of memory and cleanup work.
+
+</p>
+
+<h3>Sliding window counter</h3>
+<p>
+Rather than storing every timestamp, a sliding window counter approximates the log using just two adjacent fixed-window counts. 
+It counts the number of allowed requests in the previous fixed window and the current fixed window, then weights the previous window's allowed requests proportional to that window's overlap with a floating window ending at the current time, adding the weighted requests to the unweighted current-window requests.
+
+This is exactly the approach behind large-scale edge deployments: 
+most real-world sliding window rate limiters, such as those provided by Upstash or Cloudflare, use this approximation, often called a floating window, keeping all the same pros while removing the resource-intensive cost.
+
+It performs remarkably well in practice — 
+an analysis on 400 million requests from 270,000 distinct sources showed 0.003% of requests wrongly allowed or rate limited, with an average difference of 6% between the real rate and the approximate rate.
+
+</p>
+
+<h3>Token bucket</h3>
+<p>
+
+Each user's bucket is initialized with a capacity of tokens; every time the user makes a request, the tokens are refilled by the refill rate multiplied by the time elapsed since the stored last-refill timestamp, but the total is always capped at the bucket's capacity.
+
+
+Requests consume tokens, so if none remain, requests are rejected — but if a client is idle, tokens accumulate up to the bucket's maximum capacity, allowing controlled bursts without violating the long-term average limit.
+
+</p>
+
+<h3>Leaky bucket</h3>
+<p>
+
+Leaky bucket flips the model: it enforces a constant output rate, where incoming requests enter a queue that drains at a steady pace, and if the queue is full, new requests are rejected.
+
+Where token bucket rewards a well-behaved idle client with the ability to burst, 
+leaky bucket's refusal to ever spike becomes the right guarantee when something fragile sits directly behind the limiter — a legacy service or a database with hard connection limits.
+
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Token Bucket Mechanics</h4>
+<svg viewBox="0 0 700 320" width="100%" style="max-width:680px">
+  <defs>
+    <marker id="arrow1" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4ecdc4"/>
+    </marker>
+    <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b90a0"/>
+    </marker>
+  </defs>
+  <text x="130" y="30" text-anchor="middle" font-family="Inter,sans-serif" font-size="13" fill="#8b90a0">refill rate r</text>
+  <line x1="130" y1="40" x2="130" y2="70" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arrow1)"/>
+
+  <rect x="50" y="70" width="160" height="180" rx="14" fill="#232733" stroke="#2e3345" stroke-width="2"/>
+  <text x="130" y="265" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#8b90a0">bucket (capacity C)</text>
+
+  <g fill="#ffd93d">
+    <circle cx="80" cy="220" r="9"/><circle cx="105" cy="220" r="9"/><circle cx="130" cy="220" r="9"/><circle cx="155" cy="220" r="9"/><circle cx="180" cy="220" r="9"/>
+    <circle cx="80" cy="195" r="9"/><circle cx="105" cy="195" r="9"/><circle cx="130" cy="195" r="9"/><circle cx="155" cy="195" r="9"/><circle cx="180" cy="195" r="9"/>
+    <circle cx="80" cy="170" r="9"/><circle cx="105" cy="170" r="9"/><circle cx="130" cy="170" r="9"/>
+  </g>
+  <text x="130" y="140" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">13 tokens available</text>
+
+  <line x1="210" y1="120" x2="320" y2="80" stroke="#6c8cff" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="330" y="75" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">request arrives</text>
+  <text x="330" y="93" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">token available → consume 1, forward</text>
+
+  <rect x="480" y="55" width="160" height="40" rx="8" fill="#1a1d27" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="560" y="80" text-anchor="middle" font-family="Inter,sans-serif" font-size="13" fill="#4ecdc4">200 OK → forwarded</text>
+
+  <line x1="210" y1="180" x2="320" y2="220" stroke="#ff6b9d" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="330" y="215" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">bucket empty</text>
+  <text x="330" y="233" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">no tokens left → reject</text>
+
+  <rect x="480" y="200" width="160" height="40" rx="8" fill="#1a1d27" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="560" y="225" text-anchor="middle" font-family="Inter,sans-serif" font-size="13" fill="#ff6b9d">429 Too Many Requests</text>
+
+  <text x="350" y="300" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">idle clients bank unused tokens up to capacity C, enabling controlled bursts</text>
+</svg>
+</div>
+
+<h2>The boundary-burst problem, visualized</h2>
+<p>
+The gap between fixed and sliding windows is easiest to see on a timeline. With a fixed window, nothing prevents traffic from clustering right at the seam between two windows — each half looks legal in isolation, but the origin server sees a real spike.
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Fixed Window vs. Sliding Window Counter</h4>
+<svg viewBox="0 0 700 260" width="100%" style="max-width:680px">
+  <text x="10" y="24" font-family="Inter,sans-serif" font-size="13" fill="#e1e4ed">Fixed window (limit = 10 req / window)</text>
+  <rect x="10" y="34" width="330" height="50" fill="#232733" stroke="#2e3345"/>
+  <rect x="340" y="34" width="330" height="50" fill="#1a1d27" stroke="#2e3345"/>
+  <line x1="340" y1="34" x2="340" y2="84" stroke="#6c8cff" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="340" y="26" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#6c8cff">window boundary</text>
+
+  <g fill="#ff6b9d">
+    <circle cx="300" cy="50" r="5"/><circle cx="310" cy="50" r="5"/><circle cx="320" cy="50" r="5"/><circle cx="330" cy="50" r="5"/><circle cx="338" cy="50" r="5"/>
+    <circle cx="342" cy="50" r="5"/><circle cx="350" cy="50" r="5"/><circle cx="360" cy="50" r="5"/><circle cx="370" cy="50" r="5"/><circle cx="380" cy="50" r="5"/>
+  </g>
+  <text x="360" y="72" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#ff6b9d">10 requests in a few ms — both windows legal, origin sees 2x burst</text>
+
+  <text x="10" y="130" font-family="Inter,sans-serif" font-size="13" fill="#e1e4ed">Sliding window counter (same events, weighted overlap)</text>
+  <rect x="10" y="140" width="330" height="50" fill="#232733" stroke="#2e3345"/>
+  <rect x="340" y="140" width="330" height="50" fill="#1a1d27" stroke="#2e3345"/>
+  <rect x="150" y="140" width="220" height="50" fill="#4ecdc422" stroke="#4ecdc4" stroke-dasharray="3 3"/>
+  <text x="260" y="160" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#4ecdc4">floating window ending "now"</text>
+  <text x="260" y="176" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">count = current + (prev × overlap %)</text>
+
+  <text x="350" y="230" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">Same 10 events now register as one smoothed rate, catching the boundary spike other counters miss</text>
+</svg>
+</div>
+
+<h2>Making it work across many machines</h2>
+<p>
+A single-process counter is trivial; the hard part is that modern APIs are served by hundreds of stateless nodes behind a load balancer. 
+Rate limiting protects distributed systems from abuse, prevents resource exhaustion, and rations a finite backend across many callers
+, which means the counter itself has to become a distributed object.
+</p>
+<p>
+
+Most production systems combine a sliding window counter or token bucket with Redis-backed shared state and IETF RateLimit headers.
+
+This is precisely how Cloudflare evolved its own limiter: after outgrowing the per-node <code>limit_req_zone</code> module bundled with NGINX, 
+the team worked out how to implement a good counting system using only a few memcache primitives without much contention, though it still required a memcache query on every request to get the current rate.
+
+Stripe takes a similar centralized-store approach: 
+it runs a centralized bucket host where tokens are taken on each request and slowly dripped back in — every Stripe user gets a bucket, and every request removes a token from it, implemented using Redis.
+
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 3 — Distributed Rate Limiting with Shared State</h4>
+<svg viewBox="0 0 700 260" width="100%" style="max-width:680px">
+  <defs>
+    <marker id="arrow3" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b90a0"/>
+    </marker>
+  </defs>
+  <rect x="20" y="100" width="90" height="50" rx="8" fill="#232733" stroke="#2e3345"/>
+  <text x="65" y="130" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">Clients</text>
+
+  <line x1="110" y1="125" x2="180" y2="60" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow3)"/>
+  <line x1="110" y1="125" x2="180" y2="125" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow3)"/>
+  <line x1="110" y1="125" x2="180" y2="190" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow3)"/>
+
+  <rect x="180" y="35" width="120" height="45" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="240" y="62" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#6c8cff">Edge node A</text>
+  <rect x="180" y="102" width="120" height="45" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="240" y="129" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#6c8cff">Edge node B</text>
+  <rect x="180" y="168" width="120" height="45" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="240" y="195" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#6c8cff">Edge node C</text>
+
+  <line x1="300" y1="57" x2="410" y2="120" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#arrow3)"/>
+  <line x1="300" y1="124" x2="410" y2="124" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#arrow3)"/>
+  <line x1="300" y1="190" x2="410" y2="128" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#arrow3)"/>
+
+  <rect x="410" y="95" width="150" height="60" rx="10" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="485" y="120" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#4ecdc4">Shared counter</text>
+  <text x="485" y="137" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">Redis / Memcache</text>
+
+  <line x1="560" y1="124" x2="640" y2="124" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arrow3)"/>
+  <rect x="600" y="100" width="80" height="48" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="640" y="128" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Origin</text>
+
+  <text x="350" y="240" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">Every edge node increments the same key, so the global rate is enforced consistently — at the cost of a network round trip per check</text>
+</svg>
+</div>
+
+<h3>Telling clients before they get throttled</h3>
+<p>
+Rather than making clients guess, servers can advertise their budget proactively. 
+A standard set of HTTP header fields lets servers communicate rate-limit policies and current quota: <code>RateLimit-Policy</code> describes the quota policy a client's requests will consume, and <code>RateLimit</code> describes the quota currently available under that policy.
+ This IETF draft standardizes what vendors like GitHub and Stripe have long done with bespoke <code>X-RateLimit-*</code> headers. 
+Clients should also add random jitter to retries — if all rate-limited clients retry at exactly the Retry-After time, they all hit the server simultaneously.
+
+</p>
+
+<h2>Choosing between them</h2>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">Token Bucket</h4>
+    <ul>
+      <li>Allows controlled bursts from banked, unused capacity</li>
+      <li>Best default for public, client-facing APIs</li>
+      <li>
+Runs behind more APIs than any other algorithm, including AWS, Stripe, and GitHub
+</li>
+      <li>Two numbers of state: token count + last-refill timestamp</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Leaky Bucket</h4>
+    <ul>
+      <li>Forces a strictly constant output rate, no matter the input shape</li>
+      <li>Ideal for shaping traffic into a fragile downstream dependency</li>
+      <li>No memory of idle time — never rewards well-behaved bursts</li>
+      <li>Classic use: traffic shaping / QoS in networking gear</li>
+    </ul>
+  </div>
+</div>
+
+<table class="algo-table">
+  <tr><th>Algorithm</th><th>Memory</th><th>Boundary accuracy</th><th>Burst behavior</th></tr>
+  <tr><td><strong>Fixed window</strong></td><td>O(1)</td><td>
+Allows 2x bursts at the boundary
+</td><td>Hard cutoff, resets sharply</td></tr>
+  <tr><td><strong>Sliding window log</strong></td><td>O(n) requests</td><td>
+Exact, but pays O(n) memory
+</td><td>None — exact accounting</td></tr>
+  <tr><td><strong>Sliding window counter</strong></td><td>O(1)</td><td>
+~6% drift on average vs. the exact log
+</td><td>Smoothed, near-exact at scale</td></tr>
+  <tr><td><strong>Token bucket</strong></td><td>O(1)</td><td>N/A — models capacity, not history</td><td>
+Separates burst capacity from sustained rate
+</td></tr>
+  <tr><td><strong>Leaky bucket</strong></td><td>O(1) + queue</td><td>N/A</td><td>None — strictly constant drain rate</td></tr>
+</table>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Cloudflare Edge</div>
+    <div class="desc">
+Rate limiting is applied at the edge of the network so origin servers aren't bothered by excessive traffic or layer-7 attacks
+, using an approximated sliding window across thousands of edge nodes.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Stripe API</div>
+    <div class="desc">
+Every Stripe user has a Redis-backed token bucket; every request removes a token from that user's bucket
+, capping both read and write request rates per API key.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">GitHub REST API</div>
+    <div class="desc">
+GitHub is among the APIs whose rate limiter runs on the token bucket algorithm
+, tiering unauthenticated vs. authenticated request budgets per hour.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Linux Traffic Control</div>
+    <div class="desc">
+The Linux HTB queuing discipline replaces average-idle bandwidth calculations with token-bucket filters, giving more direct control of burst sizes
+ for shaping outbound network traffic.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">AI / LLM APIs</div>
+    <div class="desc">Providers rate-limit on both request count and token throughput per minute, tiered by plan, reflecting that compute cost — not just request count — is the scarce resource.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Load Shedding</div>
+    <div class="desc">
+When traffic can be split into priority buckets, a load shedder adds backpressure so internal systems can recover
+, dropping low-priority traffic before critical paths fail.</div>
+  </div>
+</div>
+
+<h2>Design checklist</h2>
+<p>
+Before picking an algorithm, be explicit about three independent choices: 
+rate limiting decomposes into three largely independent decisions — algorithm, state location, and response payload.
+ Get the algorithm right for your burst tolerance, decide whether counters live per-instance or in shared storage like Redis, and make sure clients get actionable <code>429</code> responses with rate-limit headers and jittered retry guidance rather than a silent drop.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+  <li><a href="https://www.rfc-editor.org/rfc/rfc6585" target="_blank">RFC 6585 — Additional HTTP Status Codes (defines 429 Too Many Requests)</a></li>
+  <li><a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-ratelimit-headers" target="_blank">IETF Internet-Draft — RateLimit header fields for HTTP</a></li>
+  <li><a href="https://blog.cloudflare.com/counting-things-a-lot-of-different-things/" target="_blank">Cloudflare Blog — How we built rate limiting capable of scaling to millions of domains</a></li>
+  <li><a href="https://stripe.com/blog/rate-limiters" target="_blank">Stripe Engineering Blog — Scaling your API with rate limiters</a></li>
+  <li><a href="https://redis.io/glossary/rate-limiting/" target="_blank">Redis — Rate Limiting glossary and patterns</a></li>
+  <li><a href="https://developers.cloudflare.com/ai-gateway/features/rate-limiting/" target="_blank">Cloudflare Docs — Rate limiting (fixed vs. sliding)</a></li>
+  <li><a href="https://intronetworks.cs.luc.edu/current/uhtml/tokenbucket.html" target="_blank">An Introduction to Computer Networks — Token Bucket Rate Limiting</a></li>
+  <li><a href="https://arxiv.org/pdf/2602.11741" target="_blank">arXiv — Designing Scalable Rate Limiting Systems: Algorithms, Architecture, and Distributed Solutions</a></li>
+  <li><a href="https://blog.arcjet.com/rate-limiting-algorithms-token-bucket-vs-sliding-window-vs-fixed-window/" target="_blank">Arcjet — Rate Limiting Algorithms: Token Bucket vs Sliding Window vs Fixed Window</a></li>
+  <li><a href="https://smudge.ai/blog/ratelimit-algorithms" target="_blank">Smudge — Visualizing algorithms for rate limiting</a></li>
+  <li><a href="https://sujeet.pro/articles/rate-limiting-strategies" target="_blank">Sujeet Jaiswal — Rate Limiting Strategies: Token Bucket, Leaky Bucket, and Sliding Window</a></li>
+  <li><a href="https://www.digitalapplied.com/blog/api-rate-limiting-strategies-2026-engineering-reference" target="_blank">Digital Applied — API Rate Limiting Strategies: 2026 Engineering Reference</a></li>
+  <li><a href="https://medium.com/@0xTanzim/understanding-the-token-bucket-algorithm-for-rate-limiting-fccdf80e27ca" target="_blank">Tanzim Hossain — Understanding the Token Bucket Algorithm for Rate Limiting</a></li>
+  <li><a href="https://rdiachenko.com/posts/arch/rate-limiting/sliding-window-algorithm/" target="_blank">RD Blog — Sliding Window Rate Limiting and its Memory-Optimized Variant</a></li>
+  <li><a href="https://gist.github.com/ptarjan/e38f45f2dfe601419ca3af937fff574d" target="_blank">Stripe Engineering — Rate limiters and load shedders (gist)</a></li>
+</ol>
+</div>
+
+</body>
+</html>

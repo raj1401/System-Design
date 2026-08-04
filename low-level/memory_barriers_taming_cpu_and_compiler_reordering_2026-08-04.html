@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Barriers: Taming CPU and Compiler Reordering</title>
+<meta name="description" content="Modern CPUs and compilers silently reorder loads and stores for speed. Memory barriers are the primitives that let multicore software reimpose the ordering it needs, underpinning locks, lock-free structures, and the Linux kernel.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  .barrier-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+    margin: 20px 0;
+  }
+  .barrier-table th, .barrier-table td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--text-dim);
+  }
+  .barrier-table th {
+    color: var(--text);
+    background: var(--surface2);
+  }
+  .barrier-table code { font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>Memory Barriers: Taming CPU and Compiler Reordering</h1>
+<p class="subtitle">Why "it happened first in my code" doesn't mean "it happened first in memory" — and the instructions that force the issue.</p>
+<p class="meta">August 4, 2026 &middot; 5 min read</p>
+
+<h2>What Is a Memory Barrier?</h2>
+<p>
+A memory barrier (or <em>fence</em>) is an instruction that constrains how a CPU and compiler may reorder memory
+operations — loads and stores — around it. On a single core running single-threaded code, reordering is invisible: the
+processor guarantees it will still look as if everything executed in program order. The trouble starts the moment a
+second core reads memory that the first core is writing to. Out-of-order execution, store buffers, speculative loads,
+and compiler optimizations can all make writes become visible to other cores in a different order than they were
+issued, and memory barriers are the tool that lets programmers reimpose exactly the ordering they need, no more and
+no less.
+</p>
+<p>
+As one deep dive on synchronization puts it, <a href="https://www.internalpointers.com/post/understanding-memory-ordering">a memory barrier "works like a barricade: operations issued prior to the barrier are guaranteed to be performed before operations issued after it."</a>
+This single idea — a barricade that fixes the relative order of memory accesses — underlies spinlocks, lock-free queues,
+<code>RCU</code> publication, and nearly every synchronization primitive that isn't a plain mutex.
+</p>
+
+<h2>Why Reordering Happens</h2>
+<p>
+Modern CPUs don't write directly to shared memory. Instead, a store is placed in a per-core <strong>store buffer</strong>
+(also called a write queue) and drains to the cache/memory hierarchy asynchronously. As one explainer of write ordering
+notes, <a href="https://noelzubin.github.io/posts/crossing-the-fence/">writes are usually queued before they "really happen," and although they enter the queue in order, they may be reordered while inside it.</a>
+Loads, meanwhile, can be satisfied speculatively or reordered ahead of independent stores. The compiler adds a second
+layer of reordering on top: it's free to reorder, merge, or eliminate memory accesses entirely as long as single-threaded
+semantics are preserved — which is exactly the class of transformation that breaks multi-threaded assumptions.
+</p>
+<p>
+The canonical way to see this go wrong is the "message passing" pattern. Thread 1 writes a data value and then a flag;
+Thread 2 checks the flag and then reads the data, assuming that seeing the flag implies seeing the data. Without a
+barrier, the CPU's store buffer can let the flag write become globally visible before the data write, so Thread 2 can
+observe the flag set but read stale data.
+</p>
+
+<div class="diagram-container">
+  <h4>Diagram 1 — Store Buffers Break the Illusion of Order</h4>
+  <svg viewBox="0 0 760 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+    <!-- Core 1 -->
+    <rect x="20" y="20" width="220" height="60" rx="8" fill="#232733" stroke="#6c8cff"/>
+    <text x="130" y="45" fill="#e1e4ed" font-size="14" text-anchor="middle" font-weight="600">Core 1</text>
+    <text x="130" y="65" fill="#8b90a0" font-size="12" text-anchor="middle">data = 42; flag = 1;</text>
+
+    <rect x="20" y="110" width="220" height="60" rx="8" fill="#141620" stroke="#4ecdc4"/>
+    <text x="130" y="132" fill="#e1e4ed" font-size="13" text-anchor="middle">Store Buffer</text>
+    <text x="130" y="152" fill="#ffd93d" font-size="12" text-anchor="middle">[flag=1] [data=42]</text>
+
+    <text x="130" y="200" fill="#ff6b9d" font-size="11" text-anchor="middle">reordered while draining!</text>
+
+    <!-- arrow down to memory -->
+    <line x1="130" y1="80" x2="130" y2="108" stroke="#8b90a0" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="130" y1="170" x2="130" y2="235" stroke="#8b90a0" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <!-- shared memory -->
+    <rect x="20" y="240" width="220" height="60" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+    <text x="130" y="262" fill="#e1e4ed" font-size="13" text-anchor="middle">Shared Memory</text>
+    <text x="130" y="282" fill="#8b90a0" font-size="12" text-anchor="middle">flag=1 visible first</text>
+
+    <!-- Core 2 -->
+    <rect x="520" y="20" width="220" height="60" rx="8" fill="#232733" stroke="#6c8cff"/>
+    <text x="630" y="45" fill="#e1e4ed" font-size="14" text-anchor="middle" font-weight="600">Core 2</text>
+    <text x="630" y="65" fill="#8b90a0" font-size="12" text-anchor="middle">while(!flag); read(data)</text>
+
+    <rect x="520" y="240" width="220" height="60" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+    <text x="630" y="262" fill="#e1e4ed" font-size="13" text-anchor="middle">Reads flag == 1</text>
+    <text x="630" y="282" fill="#ff6b9d" font-size="12" text-anchor="middle">but data still 0 (stale!)</text>
+
+    <line x1="240" y1="270" x2="518" y2="270" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrow-pink)"/>
+    <line x1="630" y1="80" x2="630" y2="238" stroke="#8b90a0" stroke-width="2" stroke-dasharray="3,3" marker-end="url(#arrow)"/>
+
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#8b90a0"/>
+      </marker>
+      <marker id="arrow-pink" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#ff6b9d"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<h3>The Four Fundamental Orderings</h3>
+<p>
+Barriers are usually described in terms of which pairs of accesses they forbid from crossing each other. A write
+barrier <a href="https://noelzubin.github.io/posts/crossing-the-fence/">controls the order of writes specifically, since stores posted to a queue may otherwise be reordered inside it</a>,
+while load, acquire, release, and full barriers each target a different pair. The four building blocks are:
+</p>
+<div class="diagram-container">
+  <h4>Diagram 2 — The Barrier Matrix</h4>
+  <svg viewBox="0 0 640 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+    <text x="320" y="24" fill="#8b90a0" font-size="12" text-anchor="middle">Can operation #2 move before operation #1?</text>
+    <!-- column headers -->
+    <text x="240" y="60" fill="#e1e4ed" font-size="13" text-anchor="middle" font-weight="600">2nd: Load</text>
+    <text x="440" y="60" fill="#e1e4ed" font-size="13" text-anchor="middle" font-weight="600">2nd: Store</text>
+    <!-- row headers -->
+    <text x="90" y="110" fill="#e1e4ed" font-size="13" text-anchor="end" font-weight="600">1st: Load</text>
+    <text x="90" y="220" fill="#e1e4ed" font-size="13" text-anchor="end" font-weight="600">1st: Store</text>
+
+    <!-- LoadLoad -->
+    <rect x="120" y="80" width="180" height="80" rx="8" fill="#232733" stroke="#6c8cff"/>
+    <text x="210" y="110" fill="#6c8cff" font-size="14" text-anchor="middle" font-weight="700">LoadLoad</text>
+    <text x="210" y="130" fill="#8b90a0" font-size="11" text-anchor="middle">barrier prevents reorder</text>
+    <text x="210" y="146" fill="#8b90a0" font-size="11" text-anchor="middle">part of an ACQUIRE fence</text>
+
+    <!-- LoadStore -->
+    <rect x="320" y="80" width="180" height="80" rx="8" fill="#232733" stroke="#4ecdc4"/>
+    <text x="410" y="110" fill="#4ecdc4" font-size="14" text-anchor="middle" font-weight="700">LoadStore</text>
+    <text x="410" y="130" fill="#8b90a0" font-size="11" text-anchor="middle">shared by ACQUIRE</text>
+    <text x="410" y="146" fill="#8b90a0" font-size="11" text-anchor="middle">and RELEASE fences</text>
+
+    <!-- StoreStore -->
+    <rect x="120" y="180" width="180" height="80" rx="8" fill="#232733" stroke="#ff6b9d"/>
+    <text x="210" y="210" fill="#ff6b9d" font-size="14" text-anchor="middle" font-weight="700">StoreStore</text>
+    <text x="210" y="230" fill="#8b90a0" font-size="11" text-anchor="middle">part of a RELEASE fence</text>
+    <text x="210" y="246" fill="#8b90a0" font-size="11" text-anchor="middle">a.k.a write barrier (wmb)</text>
+
+    <!-- StoreLoad -->
+    <rect x="320" y="180" width="180" height="80" rx="8" fill="#232733" stroke="#ffd93d"/>
+    <text x="410" y="210" fill="#ffd93d" font-size="14" text-anchor="middle" font-weight="700">StoreLoad</text>
+    <text x="410" y="230" fill="#8b90a0" font-size="11" text-anchor="middle">the expensive one —</text>
+    <text x="410" y="246" fill="#8b90a0" font-size="11" text-anchor="middle">needs a full fence (mfence)</text>
+
+    <text x="320" y="295" fill="#8b90a0" font-size="11" text-anchor="middle">Acquire = LoadLoad+LoadStore · Release = LoadStore+StoreStore · Full = all four</text>
+  </svg>
+</div>
+<p>
+This maps directly to how <a href="https://preshing.com/20130922/acquire-and-release-fences/">an acquire fence functions as a combined LoadLoad and LoadStore barrier, while a release fence functions as a combined LoadStore and StoreStore barrier</a>.
+A full fence (<code>mb()</code>, <code>mfence</code>, C++'s <code>seq_cst</code>) enforces all four orderings including the
+expensive StoreLoad case, which is why architectures try to avoid it whenever a cheaper acquire/release pairing will do.
+</p>
+
+<h3>Acquire/Release: The Handshake Pattern</h3>
+<p>
+The dominant idiom in real code is the acquire-release pair. A producer thread writes some data, then performs a
+<strong>release</strong> store to a flag; a consumer thread performs an <strong>acquire</strong> load of that same flag
+before reading the data. As one treatment of the pattern summarizes, <a href="https://sanjeev.pages.dev/memory-barriers/">the producing thread writes then issues a release barrier so that all writes before it become visible to other threads after the barrier, and the consuming thread issues an acquire load to synchronize with that published data</a>.
+Crucially, <a href="https://preshing.com/20130922/acquire-and-release-fences/">acquire and release fences can establish a "synchronizes-with" relationship, prohibiting reordering in a way that lets threads reliably pass information to each other</a> —
+this is the formal guarantee that makes lock-free publication safe.
+</p>
+
+<div class="diagram-container">
+  <h4>Diagram 3 — Acquire/Release Handoff Between Threads</h4>
+  <svg viewBox="0 0 720 260" width="100%" height="260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+    <text x="60" y="30" fill="#e1e4ed" font-size="13" font-weight="600">Thread 1 (producer)</text>
+    <line x1="60" y1="40" x2="60" y2="230" stroke="#2e3345" stroke-width="2"/>
+    <circle cx="60" cy="70" r="5" fill="#4ecdc4"/>
+    <text x="75" y="74" fill="#8b90a0" font-size="12">write a = 1</text>
+    <circle cx="60" cy="110" r="5" fill="#4ecdc4"/>
+    <text x="75" y="114" fill="#8b90a0" font-size="12">write b = 2</text>
+    <circle cx="60" cy="150" r="6" fill="#ffd93d"/>
+    <text x="75" y="154" fill="#ffd93d" font-size="12" font-weight="600">release store: ready = true</text>
+
+    <text x="580" y="30" fill="#e1e4ed" font-size="13" font-weight="600" text-anchor="end">Thread 2 (consumer)</text>
+    <line x1="580" y1="40" x2="580" y2="230" stroke="#2e3345" stroke-width="2"/>
+    <circle cx="580" cy="190" r="6" fill="#ff6b9d"/>
+    <text x="565" y="194" fill="#ff6b9d" font-size="12" font-weight="600" text-anchor="end">acquire load: ready == true</text>
+    <circle cx="580" cy="220" r="5" fill="#6c8cff"/>
+    <text x="565" y="224" fill="#8b90a0" font-size="12" text-anchor="end">read a, b — guaranteed 1, 2</text>
+
+    <path d="M65,150 C 300,150 300,190 575,190" stroke="#ffd93d" stroke-width="2" fill="none" marker-end="url(#arrow-y)"/>
+    <text x="320" y="175" fill="#8b90a0" font-size="11" text-anchor="middle">synchronizes-with</text>
+    <defs>
+      <marker id="arrow-y" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 Z" fill="#ffd93d"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<div class="callout">
+  <strong>Why this matters:</strong> Every lock, atomic reference count, RCU publication, and lock-free ring buffer
+  ultimately bottoms out in an acquire/release pair. Get the barrier wrong — or omit it — and the bug is a data race
+  that may only manifest on weakly-ordered hardware, under heavy contention, or after a compiler upgrade changes its
+  reordering heuristics. These bugs are notoriously non-reproducible because they depend on a specific hardware memory
+  model, making them one of the most feared classes of concurrency defect.
+</div>
+
+<h3>Barriers in the Linux Kernel</h3>
+<p>
+The Linux kernel exposes barriers as a small, portable API layered over each architecture's native instructions.
+<a href="https://github.com/torvalds/linux/blob/master/Documentation/memory-barriers.txt">Its memory-barriers documentation defines a general barrier, a write barrier, and a read barrier, each with both a mandatory and an SMP-conditional variant</a> — on
+uniprocessor kernels the SMP-conditional versions compile down to nothing more than a compiler barrier. Kernel locking
+primitives layer acquire/release semantics on top: <a href="https://github.com/torvalds/linux/blob/master/Documentation/memory-barriers.txt">an ACQUIRE operation guarantees that memory operations issued after it complete after it has completed, while operations issued before it may still complete afterward</a>.
+The kernel's Linux Kernel Memory Model (LKMM) formalizes this further: <a href="https://docs.kernel.org/dev-tools/lkmm/docs/ordering.html">the full <code>smp_mb()</code> barrier orders all of a CPU's prior accesses against all subsequent accesses from the viewpoint of every CPU in the system</a>.
+</p>
+<table class="barrier-table">
+  <tr><th>Linux primitive</th><th>Ordering guaranteed</th><th>Typical use</th></tr>
+  <tr><td><code>smp_mb()</code></td><td>Full barrier: all 4 orderings</td><td>General SMP synchronization, cross-CPU handoff</td></tr>
+  <tr><td><code>smp_wmb()</code></td><td>StoreStore</td><td>Publishing a data structure before a pointer</td></tr>
+  <tr><td><code>smp_rmb()</code></td><td>LoadLoad</td><td>Reading a pointer before its target's contents</td></tr>
+  <tr><td><code>smp_mb__before_atomic()</code></td><td>Full barrier before an unordered RMW</td><td>Reference-count teardown ordering</td></tr>
+  <tr><td><code>smp_mb__after_spinlock()</code></td><td>Full ordering after a successful lock acquire</td><td>Scheduler / RCU critical paths</td></tr>
+</table>
+<p>
+A concrete pattern from the kernel docs: to mark an object dead before dropping its last reference, the code issues
+<code>obj-&gt;dead = 1; smp_mb__before_atomic(); atomic_dec(&amp;obj-&gt;ref_count);</code>, which <a href="https://docs.kernel.org/core-api/wrappers/memory-barriers.html">ensures the death mark is perceived as set before the reference counter is decremented</a>, closing a race where another CPU could observe a live-looking object with a zero refcount.
+</p>
+
+<h2>Hardware Differs: Strong vs. Weak Memory Models</h2>
+<p>
+Not all CPUs reorder equally aggressively, which is why the same C/C++ code needs different actual instructions on
+different architectures.
+</p>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">x86/x86-64 (TSO)</h4>
+    <ul>
+      <li>Implements <a href="https://lwn.net/Articles/970907/">Total Store Order, guaranteeing writes are seen by all CPUs in the order they were executed</a></li>
+      <li>Loads are not reordered with other loads; stores not reordered with other stores</li>
+      <li>Only StoreLoad reordering remains possible — needs an explicit <code>mfence</code> or locked instruction</li>
+      <li>Many acquire/release operations are "free" — plain loads and stores often suffice</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">ARM / POWER (Weak)</h4>
+    <ul>
+      <li><a href="https://lwn.net/Articles/970907/">Gives the CPU far more freedom to reorder operations relative to program order</a></li>
+      <li>Loads, stores, and even independent writes from other cores can be observed out of order</li>
+      <li>Requires explicit barriers (<code>DMB</code>, <code>DSB</code>) or acquire/release instructions like <code>LDAR</code>/<code>STLR</code></li>
+      <li>Cheaper hardware and lower power, but far easier to write subtly broken concurrent code</li>
+    </ul>
+  </div>
+</div>
+<p>
+This is precisely why languages like C++11 and Rust expose an abstract memory model (<code>relaxed</code>,
+<code>acquire</code>, <code>release</code>, <code>acq_rel</code>, <code>seq_cst</code>) instead of hardware
+instructions directly — <a href="https://noelzubin.github.io/posts/crossing-the-fence/">a relaxed ordering means the compiler and CPU are free to reorder the instruction however they like, while sequentially-consistent ordering forbids any reordering at all</a>, and the compiler picks the cheapest instruction sequence that satisfies the requested guarantee on the target architecture.
+</p>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Spinlocks &amp; Mutexes</div>
+    <div class="desc">Lock acquire uses an acquire barrier, unlock uses a release barrier, ensuring critical-section writes stay contained between them.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Lock-Free Ring Buffers</div>
+    <div class="desc">Single-producer/single-consumer queues use release stores to publish a write index and acquire loads to read it, avoiding a full lock entirely.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Reference Counting</div>
+    <div class="desc">Kernel object teardown pairs a barrier with the final <code>atomic_dec</code> so a "dead" flag is guaranteed visible before the count hits zero.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Seqlocks</div>
+    <div class="desc">Readers retry if a sequence counter changes; writers bump the counter with barriers before and after the protected update.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">JVM <code>volatile</code></div>
+    <div class="desc">The JLS maps volatile writes/reads to release/acquire semantics, and the JIT emits store/load fences (e.g. an <code>sfence</code>) accordingly.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Memory-Mapped Devices</div>
+    <div class="desc">Drivers issue barriers before/after MMIO writes so a device sees configuration registers in the exact order the driver intended.</div>
+  </div>
+</div>
+
+<h2>Takeaway</h2>
+<p>
+Memory barriers are the connective tissue between "the hardware is fast because it reorders things" and "concurrent
+software is correct because it doesn't care, except where it must." Every lock-free structure, every kernel
+synchronization primitive, and every language-level atomic ultimately compiles down to a small set of barrier types —
+LoadLoad, LoadStore, StoreStore, and StoreLoad — combined into acquire, release, or full fences. Understanding that
+vocabulary is what lets you read a memory model spec, a kernel comment, or a C++ <code>std::memory_order</code> and
+know exactly what guarantee you're getting, and what you're paying for it.
+</p>
+
+<div class="sources">
+  <h2>Sources &amp; Further Reading</h2>
+  <ol>
+    <li><a href="https://preshing.com/20130922/acquire-and-release-fences/">Jeff Preshing, "Acquire and Release Fences," preshing.com (2013)</a></li>
+    <li><a href="https://preshing.com/20120930/weak-vs-strong-memory-models/">Jeff Preshing, "Weak vs. Strong Memory Models," preshing.com (2012)</a></li>
+    <li><a href="https://noelzubin.github.io/posts/crossing-the-fence/">"Crossing the Fence: An Introduction to Memory Barriers"</a></li>
+    <li><a href="https://www.internalpointers.com/post/understanding-memory-ordering">"Understanding Memory Reordering," Internal Pointers</a></li>
+    <li><a href="https://sanjeev.pages.dev/memory-barriers/">"Memory Barriers and Fencing," Stay Tuned</a></li>
+    <li><a href="https://www.deep-kondah.com/on-the-complexity-of-synchronization-memory-barriers-locks-and-scalability/">"On the Complexity of Synchronization: Memory Barriers, Locks, and Scalability"</a></li>
+    <li><a href="https://github.com/torvalds/linux/blob/master/Documentation/memory-barriers.txt">Linux Kernel, <code>Documentation/memory-barriers.txt</code></a></li>
+    <li><a href="https://docs.kernel.org/core-api/wrappers/memory-barriers.html">Linux Kernel Documentation, "Linux Kernel Memory Barriers"</a></li>
+    <li><a href="https://docs.kernel.org/dev-tools/lkmm/docs/ordering.html">Linux Kernel Memory Model (LKMM) Documentation, "Ordering"</a></li>
+    <li><a href="https://lwn.net/Articles/970907/">"Support for the TSO Memory Model on Arm CPUs," LWN.net (2024)</a></li>
+    <li><a href="https://www.sciencedirect.com/science/article/pii/S1383762124000390">"Analyzing the Memory Ordering Models of the Apple M1," ScienceDirect (2024)</a></li>
+    <li><a href="https://arxiv.org/pdf/1803.04432">"Memory Models for C/C++ Programmers," arXiv:1803.04432</a></li>
+  </ol>
+</div>
+
+</body>
+</html>

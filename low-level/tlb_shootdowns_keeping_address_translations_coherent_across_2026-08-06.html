@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TLB Shootdowns: Keeping Address Translations Coherent Across Cores</title>
+<meta name="description" content="A deep dive into the Translation Lookaside Buffer and TLB shootdowns, the inter-processor interrupt dance operating systems use to keep virtual to physical address mappings consistent across CPU cores.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  .step-btns {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  .step-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 0.78em;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .step-btn:hover { color: var(--text); border-color: var(--accent); }
+  .step-btn.active { color: var(--bg); background: var(--accent2); border-color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>TLB Shootdowns: Keeping Address Translations Coherent Across Cores</h1>
+<p class="subtitle">When one core edits a page table, every other core's cached translation becomes a lie — here's how the kernel cleans that up.</p>
+<p class="meta">August 6, 2026 &middot; 5 min read</p>
+
+<h2>The concept in a nutshell</h2>
+<p>
+Every memory access a CPU makes is really two lookups: a translation from a <em>virtual</em> address to a <em>physical</em> one, followed by the actual read or write. Walking the page tables in memory to do that translation on every single access would be devastatingly slow, so CPUs cache recent translations in a small, per-core hardware structure called the <code>Translation Lookaside Buffer</code> (TLB). <span>
+The TLB is an on-chip memory structure that caches the page table; it holds only page table entries, and its only purpose is to speed address translation and permissions checking.
+</span>
+</p>
+<p>
+That caching is exactly what makes it dangerous on a multicore machine. If Core&nbsp;0 unmaps a page, shrinks a heap, or changes permissions with <code>mprotect()</code>, Core&nbsp;1's TLB may still be happily translating the old, now-invalid mapping — reading freed memory, writing across a permission boundary, or executing stale code. 
+The operating system removes invalid TLB entries via interprocessor interrupts (IPIs).
+ 
+Invalidations sent to all cores running an application are called TLB shootdowns and take a significant amount of time to process.
+ It is, in effect, a tiny cache-coherence protocol implemented almost entirely in software.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> Unlike a data cache, a stale TLB entry is not merely a performance bug — it is a correctness and security hazard. A thread on another core could keep reading or executing through a mapping the kernel believes no longer exists, which is exactly the class of bug that Meltdown-style mitigations had to reason about carefully.
+</div>
+
+<h2>How address translation and the TLB actually work</h2>
+<p>
+On a TLB hit, the story is simple: 
+the Translation Lookaside Buffer is a cache of recently executed page translations within the MMU, and on a memory access the MMU first checks whether the translation is cached in the TLB — if it is, you have a TLB hit and the TLB provides the physical address immediately.
+ On a miss, hardware (or, on some architectures, software) walks the page tables: 
+if the requested translation is not in the TLB it is a miss, and the processor proceeds by looking up the page table via the page walk, which is time-consuming compared to processor speed because it involves reading multiple memory locations.
+ The result is then installed back into the TLB so the next access to that page is fast again — 
+a TLB miss triggers an external translation table walk, and the newly loaded translation is cached in the TLB for possible reuse.
+
+</p>
+<p>
+TLBs are small on purpose — they need to be searched on almost every instruction, so they're built from fast, associative or content-addressable memory: 
+a TLB may be implemented via a standard random-access memory or content-addressable memory (CAM), where a standard RAM is accessed via an index while a CAM is accessed via content.
+ Capacity is the perennial constraint: modern x86 cores carry on the order of a couple thousand entries per core, split by page size 
+each physical core has a dedicated TLB that can hold up to 2,048 entries (x86)
+ — and 
+processors such as Intel Sandy Bridge, Haswell, and Skylake maintain separate L1 TLBs for 4KB, 2MB, and 1GB page sizes
+, because a single small TLB can't efficiently hold translations for wildly different page granularities.
+
+</p>
+
+<h3>Tagging translations so they don't have to be nuked</h3>
+<p>
+Historically, switching between processes meant flushing the entire TLB, since a TLB entry with no context tag is ambiguous — process A's virtual address 0x1000 doesn't mean the same thing as process B's. x86 addressed this with <code>PCID</code> (Process-Context Identifier): 
+when a logical processor creates entries in the TLBs it associates those entries with the current PCID, and when translating an address it uses only entries associated with the current PCID.
+ This lets the kernel switch address spaces without wiping out every cached translation. Software can then selectively invalidate: 
+if the INVPCID type is 3, the logical processor invalidates all mappings — except global translations — associated with any PCID
+, while other invalidation types target a single PCID or a single address. This same tagging idea (called <code>ASID</code> on ARM/MIPS) is central to Linux's Kernel Page Table Isolation, the Meltdown mitigation, where 
+each syscall, interrupt or exception would otherwise flush the TLB
+ if PCIDs weren't used to keep kernel and user mappings from stomping on each other.
+</p>
+
+<h2>The shootdown itself: a software coherence protocol</h2>
+<p>
+Because ordinary CPU cores cannot reach into each other's TLBs directly, invalidation has to be requested and executed cooperatively. 
+After PTE changes, OS kernels cannot invalidate TLBs on other cores directly, so they perform a TLB shootdown: the initiating core sends an inter-processor interrupt to remote cores.
+ On Linux this happens through a well-worn path: a function like <code>unmap_vmas()</code> or <code>mprotect_fixup()</code> modifies the page table entries, then 
+fills out a flush_tlb_info struct with info on the parts of the address space that must be flushed, sets it as the argument to the flush_tlb_func() callback, and calls smp_call_function_many() with a CPU mask
+. Each targeted core receives the IPI, and 
+pauses its current task, invokes a kernel-defined interrupt handler such as tlb_ipi_handler, which executes CPU-specific instructions like invlpg or tlbi to invalidate the stale entries
+. Only once every core has acknowledged completion does the initiator continue — and crucially the wait matters: 
+in certain shootdown scenarios an instruction barrier is needed at target cores so they don't execute stale kernel code before their local TLB is flushed, which is why the IPI mechanism is preferred over asynchronous broadcast in those cases.
+
+</p>
+<p>
+This synchronous wait is where the cost lives. 
+The TLB shootdown mechanism has three overheads: sending IPIs to remote cores, which is worse on large NUMA machines; handling interrupts on remote cores, which can be delayed if interrupts are temporarily disabled; and the wait time for ACKs on the initiating core.
+ Delivery alone isn't free — 
+IPI delivery can take several hundreds of cycles
+ — and it competes with other latency-sensitive work: 
+IPIs are widely used to coordinate state across cores, for example to initiate TLB shootdowns, and from the perspective of an application pinned to a dedicated core they are asynchronous and unpredictable, often causing unwanted preemptions.
+
+</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Address translation: hit vs. miss</h4>
+<svg viewBox="0 0 720 260" width="100%" height="260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="10" y="30" width="140" height="50" rx="8" fill="#232733" stroke="#2e3345"/>
+  <text x="80" y="50" text-anchor="middle" fill="#e1e4ed" font-size="13">CPU core</text>
+  <text x="80" y="66" text-anchor="middle" fill="#8b90a0" font-size="11">virtual address</text>
+
+  <line x1="150" y1="55" x2="230" y2="55" stroke="#6c8cff" stroke-width="2" marker-end="url(#arrow1)"/>
+
+  <rect x="230" y="15" width="150" height="80" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="305" y="45" text-anchor="middle" fill="#6c8cff" font-size="13" font-weight="600">TLB</text>
+  <text x="305" y="63" text-anchor="middle" fill="#8b90a0" font-size="10">(per-core cache</text>
+  <text x="305" y="76" text-anchor="middle" fill="#8b90a0" font-size="10">of VPN→PPN)</text>
+
+  <!-- hit path -->
+  <line x1="380" y1="40" x2="470" y2="40" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="425" y="30" text-anchor="middle" fill="#4ecdc4" font-size="11">hit</text>
+  <rect x="470" y="15" width="180" height="45" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="560" y="42" text-anchor="middle" fill="#e1e4ed" font-size="12">physical address</text>
+
+  <!-- miss path -->
+  <line x1="380" y1="80" x2="470" y2="80" stroke="#ff6b9d" stroke-width="2" marker-end="url(#arrow3)"/>
+  <text x="425" y="98" text-anchor="middle" fill="#ff6b9d" font-size="11">miss</text>
+  <rect x="470" y="65" width="180" height="45" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="560" y="92" text-anchor="middle" fill="#e1e4ed" font-size="12">page-table walk</text>
+
+  <line x1="560" y1="110" x2="560" y2="150" stroke="#ff6b9d" stroke-width="2" marker-end="url(#arrow3)"/>
+  <rect x="450" y="150" width="220" height="45" rx="8" fill="#141620" stroke="#2e3345"/>
+  <text x="560" y="177" text-anchor="middle" fill="#e1e4ed" font-size="12">page table in RAM</text>
+
+  <line x1="450" y1="172" x2="380" y2="172" stroke="#ffd93d" stroke-width="2" marker-end="url(#arrow4)"/>
+  <text x="415" y="162" text-anchor="middle" fill="#ffd93d" font-size="10">insert entry</text>
+
+  <line x1="305" y1="150" x2="305" y2="95" stroke="#ffd93d" stroke-width="2" marker-end="url(#arrow4)"/>
+
+  <text x="360" y="230" text-anchor="middle" fill="#8b90a0" font-size="11">A miss costs a memory round trip; a hit is a single fast lookup.</text>
+
+  <defs>
+    <marker id="arrow1" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8cff"/></marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#4ecdc4"/></marker>
+    <marker id="arrow3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ff6b9d"/></marker>
+    <marker id="arrow4" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ffd93d"/></marker>
+  </defs>
+</svg>
+</div>
+
+<div class="diagram-container">
+<h4>Diagram 2 — A TLB shootdown across four cores</h4>
+<svg viewBox="0 0 720 300" width="100%" height="300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="20" y="25" fill="#e1e4ed" font-size="12" font-weight="600">Core 0 (initiator)</text>
+  <text x="20" y="90" fill="#8b90a0" font-size="12">Core 1</text>
+  <text x="20" y="150" fill="#8b90a0" font-size="12">Core 2</text>
+  <text x="20 " y="210" fill="#8b90a0" font-size="12">Core 3</text>
+
+  <line x1="140" y1="15" x2="140" y2="260" stroke="#2e3345" stroke-width="1"/>
+  <line x1="140" y1="70" x2="640" y2="70" stroke="#2e3345" stroke-dasharray="2,4"/>
+  <line x1="140" y1="130" x2="640" y2="130" stroke="#2e3345" stroke-dasharray="2,4"/>
+  <line x1="140" y1="190" x2="640" y2="190" stroke="#2e3345" stroke-dasharray="2,4"/>
+
+  <circle cx="160" cy="20" r="5" fill="#6c8cff"/>
+  <text x="172" y="24" fill="#6c8cff" font-size="11">modifies PTE</text>
+
+  <line x1="180" y1="25" x2="330" y2="65" stroke="#6c8cff" stroke-width="1.6" marker-end="url(#arrowA)"/>
+  <line x1="180" y1="25" x2="330" y2="125" stroke="#6c8cff" stroke-width="1.6" marker-end="url(#arrowA)"/>
+  <line x1="180" y1="25" x2="330" y2="185" stroke="#6c8cff" stroke-width="1.6" marker-end="url(#arrowA)"/>
+  <text x="250" y="45" fill="#6c8cff" font-size="10">IPI</text>
+
+  <circle cx="340" cy="70" r="5" fill="#ffd93d"/>
+  <circle cx="340" cy="130" r="5" fill="#ffd93d"/>
+  <circle cx="340" cy="190" r="5" fill="#ffd93d"/>
+  <text x="352" y="66" fill="#ffd93d" font-size="10">flush local TLB</text>
+  <text x="352" y="126" fill="#ffd93d" font-size="10">flush local TLB</text>
+  <text x="352" y="186" fill="#ffd93d" font-size="10">flush local TLB</text>
+
+  <line x1="400" y1="70" x2="480" y2="22" stroke="#4ecdc4" stroke-width="1.6" marker-end="url(#arrowB)"/>
+  <line x1="400" y1="130" x2="480" y2="22" stroke="#4ecdc4" stroke-width="1.6" marker-end="url(#arrowB)"/>
+  <line x1="400" y1="190" x2="480" y2="22" stroke="#4ecdc4" stroke-width="1.6" marker-end="url(#arrowB)"/>
+  <text x="470" y="45" fill="#4ecdc4" font-size="10">ACK</text>
+
+  <circle cx="490" cy="20" r="5" fill="#4ecdc4"/>
+  <text x="500" y="24" fill="#4ecdc4" font-size="11">all ACKed → resume</text>
+
+  <rect x="560" y="8" width="70" height="24" rx="6" fill="#232733" stroke="#ff6b9d"/>
+  <text x="595" y="24" text-anchor="middle" fill="#ff6b9d" font-size="10">blocked!</text>
+
+  <text x="360" y="280" text-anchor="middle" fill="#8b90a0" font-size="11">Core 0 stalls on the critical path until every remote flush is acknowledged.</text>
+
+  <defs>
+    <marker id="arrowA" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#6c8cff"/></marker>
+    <marker id="arrowB" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#4ecdc4"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>Cutting the cost: batching, laziness, and hardware broadcast</h3>
+<p>
+Because shootdowns are so expensive, both hardware and software vendors have spent a lot of effort avoiding them or making them asynchronous. Some ARM cores support a hardware broadcast invalidation instruction instead of interrupts, though it comes with trade-offs: 
+SMP systems that include chips not supporting the broadcast TLBI mechanism must always use IPIs for performing TLB shootdowns
+, and even where broadcast is available the OS may pick dynamically — 
+the OS can compare the cost of using an IPI versus a hardware broadcast to all cores and select whichever is cheaper, based on factors like the number of cores actually caching the affected pages and system topology.
+ Research systems go further: 
+Barrelfish, a research multi-kernel OS, uses message passing instead of IPIs to shoot down remote TLB entries, eliminating interrupt handling on remote cores, though it still waits for ACKs and is therefore still synchronous.
+ Other proposals remove the wait from the critical path entirely: 
+ecoTLB removes the instantaneous TLB shootdown from the critical path by executing it asynchronously
+, deferring safety to versioned bookkeeping rather than an immediate rendezvous.
+</p>
+
+<h3>Making the cache bigger instead of flushing it</h3>
+<p>
+A complementary strategy is simply reducing how often translations need to be cached or invalidated at all, by using bigger pages. 
+Using more than one page size was identified in the 1990s as one means of reducing time spent servicing TLB misses by increasing TLB reach.
+ A single huge-page TLB entry replaces hundreds of small ones: 
+as large pages can increase the coverage of the TLB — for example, each 2MB page TLB entry can cover 512 base pages — the TLB hit ratio can be improved significantly.
+ The effect on real workloads is measurable: 
+the utilization of huge pages can reduce the number of TLB misses by an order of magnitude and decrease page walk latency by up to 40%.
+ Fewer, larger mappings also mean fewer address ranges to shoot down in the first place.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> KPTI, the Meltdown mitigation, is a textbook example of the shootdown/flush tax in practice — separating kernel and user page tables meant every syscall risked a full TLB flush until PCID-aware invalidation was carefully wired in to avoid it.
+</div>
+
+<h2>Approaches compared</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">IPI-based shootdown (classic Linux/x86)</h4>
+    <ul>
+      <li>Precise: targets exactly the cores that mapped the page</li>
+      <li>Synchronous — initiator blocks on ACKs</li>
+      <li>Cost grows with core count and NUMA distance</li>
+      <li>Interrupt handling can itself be delayed</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Hardware broadcast TLBI (ARM64)</h4>
+    <ul>
+      <li>No interrupt handler needed on remote cores</li>
+      <li>Not universally supported across SoCs</li>
+      <li>Sometimes still needs an instruction barrier for correctness</li>
+      <li>Kernel may pick IPI vs. broadcast per-call based on cost</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">PCID/ASID-tagged TLBs</h4>
+    <ul>
+      <li>Avoids full flushes on context switches</li>
+      <li>Enables selective, per-address-space invalidation</li>
+      <li>Core to making KPTI affordable</li>
+      <li>Limited number of IDs must be recycled carefully</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">Asynchronous / lazy schemes (research)</h4>
+    <ul>
+      <li>Removes the wait from the hot path</li>
+      <li>Relies on versioning to detect staleness later</li>
+      <li>Improves tail latency for memory-heavy services</li>
+      <li>Not yet mainstream in stock kernels</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">munmap / mprotect</div>
+    <div class="desc">Unmapping or changing permissions on a shared region forces every core that touched it to drop the stale entry before the syscall returns.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Copy-on-write fork</div>
+    <div class="desc">When either thread writes to a shared page after a fork, the kernel copies the page and updates PTEs, which needs propagating to any core caching the old mapping.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">JIT code patching</div>
+    <div class="desc">Self-modifying or JIT-compiled code that remaps executable pages must shoot down remote TLBs so no core executes stale instructions.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Kernel Page Table Isolation</div>
+    <div class="desc">KPTI splits kernel and user page tables to mitigate Meltdown; PCID-aware invalidation exists specifically to avoid flushing the TLB on every syscall boundary.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Huge pages in databases</div>
+    <div class="desc">Large in-memory databases and hypervisors use 2MB/1GB pages so a handful of TLB entries can cover gigabytes, cutting both miss rate and shootdown frequency.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Disaggregated / swapped memory</div>
+    <div class="desc">Systems that page memory out over the network, such as those studied for memory disaggregation, are especially sensitive to shootdown latency on the critical path.</div>
+  </div>
+</div>
+
+<h2>Wrapping up</h2>
+<p>
+The TLB is one of the smallest structures in a modern CPU, but keeping it coherent across dozens of cores touches interrupts, cache-coherence-adjacent invalidation instructions, virtual memory management, and even hardware security mitigations like KPTI. TLB shootdowns are, in essence, a software-defined coherence protocol layered on top of hardware that has no native concept of shared TLB state — and understanding their cost is essential to understanding why huge pages, PCIDs, and lazy invalidation schemes exist at all.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://developer.arm.com/documentation/den0013/latest/The-Memory-Management-Unit/The-Translation-Lookaside-Buffer" target="_blank">ARM Developer — The Translation Lookaside Buffer</a></li>
+<li><a href="https://arxiv.org/pdf/2409.10946" target="_blank">Skip TLB flushes for reused pages within mmap's (arXiv:2409.10946)</a></li>
+<li><a href="https://www.usenix.org/system/files/conference/atc17/atc17-amit.pdf" target="_blank">Amit, "Optimizing the TLB Shootdown Algorithm with Page Access Tracking" — USENIX ATC 2017</a></li>
+<li><a href="https://dl.acm.org/doi/fullHtml/10.1145/3409454" target="_blank">Kumar et al., "ecoTLB: Eventually Consistent TLBs" — ACM TACO</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/x86/pti.txt" target="_blank">Linux kernel documentation — Kernel Page Table Isolation (PTI) and PCIDs</a></li>
+<li><a href="https://www.felixcloutier.com/x86/invpcid" target="_blank">Felix Cloutier — INVPCID instruction reference (Intel SDM)</a></li>
+<li><a href="http://hypervsir.blogspot.com/2014/11/improve-performance-for-separating.html" target="_blank">"Improve Performance for Separating Kernel and User Address Space with PCIDs"</a></li>
+<li><a href="https://linuxvox.com/blog/who-performs-the-tlb-shootdown/" target="_blank">"Who Performs TLB Shootdown? Kernel vs. CPU Roles Explained"</a></li>
+<li><a href="https://www.jabperf.com/how-to-deter-or-disarm-tlb-shootdowns/" target="_blank">JabPerf — "TLB Shootdowns: How To Deter or Disarm Them"</a></li>
+<li><a href="https://arxiv.org/pdf/2509.03855" target="_blank">"Towards Deterministic Sub-0.5 us Response on Linux through Interrupt Isolation" (arXiv:2509.03855)</a></li>
+<li><a href="https://lwn.net/Articles/374424/" target="_blank">Gorman, "Huge pages part 1 (Introduction)" — LWN.net</a></li>
+<li><a href="https://lwn.net/Articles/379748/" target="_blank">Gorman, "Huge pages part 5: A deeper look at TLBs and costs" — LWN.net</a></li>
+<li><a href="https://arxiv.org/pdf/2307.10618" target="_blank">"FHPM: Fine-grained Huge Page Management For Virtualization" (arXiv:2307.10618)</a></li>
+<li><a href="https://arxiv.org/pdf/2110.08613" target="_blank">"Enabling Large-Reach TLBs for High-Throughput Processors" (arXiv:2110.08613)</a></li>
+<li><a href="https://www.sciencedirect.com/topics/computer-science/translation-lookaside-buffer" target="_blank">ScienceDirect Topics — Translation Lookaside Buffer overview</a></li>
+</ol>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Conflict-Free Replicated Data Types (CRDTs)</title>
+<meta name="description" content="CRDTs are replicated data structures that let every node accept writes independently and still merge deterministically into the same state, without locks, consensus, or a single leader.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+
+  .mono-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+    margin: 20px 0;
+  }
+  .mono-table th, .mono-table td {
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--text-dim);
+  }
+  .mono-table th {
+    color: var(--text);
+    background: var(--surface2);
+  }
+  .mono-table td code { color: var(--accent4); }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Conflict-Free Replicated Data Types (CRDTs)</h1>
+<p class="subtitle">Letting every replica accept writes offline, and still converge to the same answer without asking permission first.</p>
+<p class="meta">August 6, 2026 &middot; 5 min read</p>
+
+<h2>The Idea In One Breath</h2>
+<p>
+Most distributed data problems boil down to one question: what happens when two replicas are updated at the same time, disconnected from each other? The traditional answer is coordination &mdash; locks, consensus, a leader that serializes writes. <span></span>A <strong>conflict-free replicated data type</strong> answers differently: design the data structure itself so that 
+any replica can be modified without coordinating with another replica, and when any two replicas have received the same set of updates, they reach the same state deterministically
+. No voting, no blocking, no leader &mdash; just math that guarantees the merge always works out.
+</p>
+<p>
+Wikipedia's summary captures the same guarantee from the outside: 
+an algorithm built into the data type automatically resolves any inconsistencies that occur, and although replicas may briefly disagree, they are guaranteed to eventually converge
+. The concept was 
+formally defined in 2011 by Marc Shapiro, Nuno Preguiça, Carlos Baquero and Marek Zawirski, motivated originally by collaborative text editing and mobile computing
+ &mdash; exactly the kind of environment where you can't assume a reliable connection to a central server.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> CRDTs are one of the few practical answers to the availability side of the CAP theorem that doesn't just punt the conflict problem to "figure it out later." If a mobile client or an edge datacenter goes offline for an hour, it can keep accepting writes, and when it reconnects the merge is guaranteed correct &mdash; not "usually correct," not "correct if you wrote good tests," but mathematically guaranteed by the structure of the data type.
+</div>
+
+<h2>Two Families, One Guarantee</h2>
+<p>
+Shapiro et al. define two equivalent ways to build a CRDT, and nearly every real implementation is one of these:
+</p>
+<p>
+<strong>State-based (CvRDT &mdash; convergent).</strong> 
+A replica updates its local state when it receives a client update, and occasionally ships its entire state to another replica, which merges the incoming state with its own local state
+. For this to converge no matter what order states arrive in, the merge function has to behave like a mathematical join: it must be 
+associative and commutative
+, and idempotent, which together mean the set of possible states forms a join-semilattice with a well-defined "least upper bound" for any two states.
+</p>
+<p>
+<strong>Operation-based (CmRDT &mdash; commutative).</strong> Instead of shipping whole state, replicas broadcast the individual <em>operations</em> (increment, add, remove) to every other replica, typically over a reliable causal-order broadcast channel. Correctness here doesn't require a join-semilattice; it requires that concurrent operations commute with each other, so applying them in any order produces the same result.
+</p>
+<p>
+Both families exist to satisfy the same target correctness model: <strong>Strong Eventual Consistency (SEC)</strong>. Shapiro et al.'s SEC adds a safety guarantee on top of plain eventual consistency's liveness guarantee. It requires two properties: 
+eventual update &mdash; if an update is applied by a correct replica, all correct replicas will eventually apply it &mdash; and convergence &mdash; any two correct replicas that have applied the same set of updates end up in the same state, even if those updates were applied in a different order
+. That second clause is the whole trick: you don't need to agree on <em>order</em>, only on the <em>final answer</em>.
+</p>
+
+<div class="diagram-container">
+<h4>State-Based vs Operation-Based Propagation</h4>
+<svg viewBox="0 0 720 300" width="100%" style="max-width:720px" xmlns="http://www.w3.org/2000/svg">
+  <text x="180" y="26" text-anchor="middle" font-family="Inter,sans-serif" font-size="14" font-weight="600" fill="#6c8cff">State-based (CvRDT)</text>
+  <text x="540" y="26" text-anchor="middle" font-family="Inter,sans-serif" font-size="14" font-weight="600" fill="#4ecdc4">Operation-based (CmRDT)</text>
+
+  <!-- left panel nodes -->
+  <circle cx="80" cy="120" r="34" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="80" y="116" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node A</text>
+  <text x="80" y="130" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">full state</text>
+
+  <circle cx="200" cy="70" r="34" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="200" y="66" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node B</text>
+  <text x="200" y="80" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">full state</text>
+
+  <circle cx="200" cy="200" r="34" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="200" y="196" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node C</text>
+  <text x="200" y="210" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">full state</text>
+
+  <path d="M108,105 L172,82" stroke="#6c8cff" stroke-width="1.6" fill="none" marker-end="url(#arrL)"/>
+  <path d="M172,58 L108,102" stroke="#6c8cff" stroke-width="1.6" fill="none" marker-end="url(#arrL)" opacity="0.5"/>
+  <path d="M108,135 L172,188" stroke="#6c8cff" stroke-width="1.6" fill="none" marker-end="url(#arrL)"/>
+  <path d="M172,212 L108,140" stroke="#6c8cff" stroke-width="1.6" fill="none" marker-end="url(#arrL)" opacity="0.5"/>
+  <text x="140" y="240" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">ship whole state → merge(local, received)</text>
+
+  <!-- right panel nodes -->
+  <circle cx="440" cy="150" r="34" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="440" y="146" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node A</text>
+  <text x="440" y="160" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">inc(x)</text>
+
+  <circle cx="560" cy="70" r="34" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="560" y="66" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node B</text>
+
+  <circle cx="640" cy="150" r="34" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="640" y="146" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node C</text>
+
+  <circle cx="560" cy="230" r="34" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="560" y="226" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">Node D</text>
+
+  <path d="M465,135 L538,85" stroke="#4ecdc4" stroke-width="1.6" fill="none" marker-end="url(#arrR)"/>
+  <path d="M470,150 L610,150" stroke="#4ecdc4" stroke-width="1.6" fill="none" marker-end="url(#arrR)"/>
+  <path d="M465,168 L538,213" stroke="#4ecdc4" stroke-width="1.6" fill="none" marker-end="url(#arrR)"/>
+  <text x="540" y="270" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">broadcast the op itself → every node applies it</text>
+
+  <defs>
+    <marker id="arrL" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+    <marker id="arrR" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#4ecdc4"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>Worked Example: the G-Counter</h3>
+<p>
+The simplest CRDT is the grow-only counter. 
+Its internal state on n replicas is an n-length array of non-negative integers, and querying it returns the sum of every element in the array
+. 
+Incrementing on replica i bumps only the i-th slot of that array
+ &mdash; each node only ever writes to its own column, which is what makes concurrent increments safe. 
+Merging two counters is a pairwise maximum of the two arrays
+, which is exactly the join operation a semilattice needs: order-independent, idempotent, and always produces a value at least as large as either input.
+</p>
+
+<div class="diagram-container">
+<h4>G-Counter Merge: Pairwise Max Converges Regardless of Path</h4>
+<svg viewBox="0 0 700 260" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+  <text x="90" y="30" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Node A</text>
+  <rect x="20" y="40" width="140" height="34" rx="6" fill="#141620" stroke="#6c8cff"/>
+  <text x="90" y="62" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#ffd93d">[5, 2, 7]</text>
+
+  <text x="280" y="30" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Node B</text>
+  <rect x="210" y="40" width="140" height="34" rx="6" fill="#141620" stroke="#4ecdc4"/>
+  <text x="280" y="62" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#ffd93d">[5, 4, 7]</text>
+
+  <text x="470" y="30" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Node C</text>
+  <rect x="400" y="40" width="140" height="34" rx="6" fill="#141620" stroke="#ff6b9d"/>
+  <text x="470" y="62" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#ffd93d">[5, 2, 9]</text>
+
+  <path d="M90,74 L280,120" stroke="#8b90a0" stroke-width="1.4" fill="none"/>
+  <path d="M280,74 L280,120" stroke="#8b90a0" stroke-width="1.4" fill="none"/>
+  <path d="M470,74 L280,120" stroke="#8b90a0" stroke-width="1.4" fill="none"/>
+
+  <text x="280" y="105" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">merge = elementwise max, in any order</text>
+
+  <rect x="210" y="128" width="140" height="34" rx="6" fill="#1a1d27" stroke="#e1e4ed"/>
+  <text x="280" y="150" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">[5, 4, 9]</text>
+
+  <path d="M280,162 L280,196" stroke="#8b90a0" stroke-width="1.4" fill="none" marker-end="url(#arrD)"/>
+  <text x="280" y="222" text-anchor="middle" font-family="Inter,sans-serif" font-size="13" fill="#4ecdc4" font-weight="600">query() = sum = 18</text>
+  <text x="280" y="242" text-anchor="middle" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">every replica lands here, no matter the merge order</text>
+
+  <defs>
+    <marker id="arrD" markerWidth="8" markerHeight="8" refX="4" refY="6" orient="auto"><path d="M0,0 L8,0 L4,7 Z" fill="#8b90a0"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>Beyond Counters: Sets, Maps, and Text</h3>
+<p>
+Counters are easy because increment is naturally commutative. Sets are trickier because <code>add</code> and <code>remove</code> don't commute in general &mdash; if A adds an element and B concurrently removes it, who wins? The standard fix is the <strong>OR-Set (Observed-Remove Set)</strong>, which 
+tracks both additions and deletions of elements
+ by tagging every add with a unique identifier and only letting a remove delete the specific tags it has actually observed. A concurrent add that the remover never saw survives &mdash; this "add-wins" bias is why the pattern is so common in shopping carts and collaborative lists.
+</p>
+
+<div class="diagram-container">
+<h4>OR-Set: Add-Wins Semantics Under Concurrency</h4>
+<svg viewBox="0 0 700 240" width="100%" style="max-width:700px" xmlns="http://www.w3.org/2000/svg">
+  <text x="150" y="24" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#6c8cff" font-weight="600">Replica 1</text>
+  <text x="550" y="24" text-anchor="middle" font-family="Inter,sans-serif" font-size="12" fill="#ff6b9d" font-weight="600">Replica 2</text>
+
+  <line x1="150" y1="40" x2="150" y2="210" stroke="#2e3345" stroke-width="2"/>
+  <line x1="550" y1="40" x2="550" y2="210" stroke="#2e3345" stroke-width="2"/>
+
+  <circle cx="150" cy="70" r="5" fill="#ffd93d"/>
+  <text x="165" y="74" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">add("milk", tag t1)</text>
+
+  <circle cx="550" cy="120" r="5" fill="#ff6b9d"/>
+  <text x="360" y="124" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">remove("milk", removes only tag t0)</text>
+  <text x="360" y="140" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">t1 not yet observed here → survives</text>
+
+  <path d="M155,70 C 350,70 350,180 545,180" stroke="#8b90a0" stroke-width="1.2" fill="none" stroke-dasharray="4 3" marker-end="url(#arrS)"/>
+  <circle cx="550" cy="180" r="5" fill="#ffd93d"/>
+  <text x="360" y="196" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">sync: t1 arrives at Replica 2</text>
+
+  <rect x="470" y="200" width="160" height="30" rx="6" fill="#141620" stroke="#4ecdc4"/>
+  <text x="550" y="220" text-anchor="middle" font-family="Inter,sans-serif" font-size="11" fill="#4ecdc4">Converged: "milk" present</text>
+
+  <defs>
+    <marker id="arrS" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8b90a0"/></marker>
+  </defs>
+</svg>
+</div>
+
+<p>
+The same tagging trick generalizes to richer structures: maps that nest CRDTs recursively, JSON-like documents (Automerge), and sequence CRDTs like RGA and WOOT for collaborative text, where every character insertion carries a globally unique, causally-ordered identifier so concurrent edits interleave deterministically without a central arbiter.
+</p>
+
+<h2>Delta-State: Trimming the Bandwidth Cost</h2>
+<p>
+Naively shipping the entire state on every sync round doesn't scale once documents get large. <strong>δ-state CRDTs</strong> address this by propagating only the small "delta" produced by a recent update or interval of updates rather than the full state, while preserving the same join-semilattice merge semantics 
+so that updates can be bundled into intervals sent in a way that preserves causality
+. This is the same idea Riak, Redis Enterprise, and AntidoteDB rely on internally to keep multi-datacenter sync affordable.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">State-based CvRDT</h4>
+    <ul>
+      <li>Ships full (or delta) state</li>
+      <li>Merge must be a semilattice join</li>
+      <li>Tolerant of duplicate/reordered messages</li>
+      <li>Simpler to implement correctly</li>
+      <li>Can be bandwidth-heavy without deltas</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Operation-based CmRDT</h4>
+    <ul>
+      <li>Ships individual operations</li>
+      <li>Concurrent ops must commute</li>
+      <li>Needs reliable causal-order delivery</li>
+      <li>Lower bandwidth per update</li>
+      <li>Harder to get delivery guarantees right</li>
+    </ul>
+  </div>
+</div>
+
+<h3>CRDTs vs. Operational Transformation</h3>
+<p>
+For collaborative editors specifically, CRDTs compete with the older <strong>Operational Transformation (OT)</strong> approach used by Google Docs. 
+CRDTs are designed so conflicts cannot occur mathematically, enabling decentralized collaboration without a central server, while OT modifies operations through a central coordinator
+. Figma is the widely cited case study here: 
+Google Docs uses OT for centralized real-time editing with sub-millisecond latency, while Figma switched from OT to CRDTs in 2019 for offline-first capabilities
+.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">Operational Transformation</h4>
+    <ul>
+      <li>Needs a central server to order ops</li>
+      <li>Great single-server latency</li>
+      <li>Harder to support true offline editing</li>
+      <li>Battle-tested (Google Docs)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">CRDTs</h4>
+    <ul>
+      <li>No central coordinator required</li>
+      <li>Native offline / peer-to-peer support</li>
+      <li>Metadata (tombstones) can grow over time</li>
+      <li>Used by Figma, Apple Notes, Yjs, Automerge</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<p>
+CRDTs stopped being an academic curiosity around 2012–2013 when production databases began shipping them as first-class types.
+</p>
+
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Distributed Databases</div>
+    <div class="desc">
+Riak was one of the first databases to add CRDT support in 2013
+, implementing counters, sets and maps natively.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Multi-Master Redis</div>
+    <div class="desc">
+Redis Enterprise uses CRDTs to enable multi-master replication between geographically distributed datacenters.
+</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Cloud Databases</div>
+    <div class="desc">
+Azure Cosmos DB allows conflicting values to be merged using CRDTs or custom merge procedures.
+</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Collaborative Editors</div>
+    <div class="desc">Yjs and Automerge power real-time document/canvas collaboration with automatic, server-optional conflict resolution.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Offline-First Mobile Apps</div>
+    <div class="desc">
+Apple Notes uses CRDTs for syncing offline edits between devices.
+</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Design Tools</div>
+    <div class="desc">Figma moved from operational transformation to a CRDT-based sync engine to support resilient, offline-capable multiplayer editing.</div>
+  </div>
+</div>
+
+<h2>Trade-offs to Know Before You Reach for One</h2>
+<p>
+CRDTs are not a free lunch. They favor availability and partition tolerance over strict ordering, so they are the wrong tool if you need linearizable reads or hard invariants like "never let the balance go negative" (that needs coordination, not CRDTs, or a hybrid escrow scheme). Metadata can also accumulate: sequence CRDTs used for text keep tombstones for deleted characters, and some counters keep one slot per replica forever unless you periodically compact and garbage-collect old identities. Choosing a CRDT means choosing exactly which operations you're willing to make commutative, and accepting the bookkeeping that requires.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://arxiv.org/abs/1805.06358" target="_blank">Preguiça, Baquero, Shapiro — "Conflict-free Replicated Data Types (CRDTs)" (arXiv:1805.06358)</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type" target="_blank">Wikipedia — Conflict-free replicated data type</a></li>
+<li><a href="https://dl.acm.org/doi/10.5555/2050613.2050642" target="_blank">Shapiro, Preguiça, Baquero, Zawirski — "Conflict-free Replicated Data Types" (SSS 2011)</a></li>
+<li><a href="https://link.springer.com/chapter/10.1007/978-3-642-24550-3_29" target="_blank">Springer — Conflict-Free Replicated Data Types (SSS 2011 chapter)</a></li>
+<li><a href="https://mwhittaker.github.io/consistency_in_distributed_systems/3_crdt.html" target="_blank">Whittaker — Conflict-Free Replicated Data Types (lecture notes)</a></li>
+<li><a href="https://arxiv.org/pdf/1803.02750" target="_blank">"Efficient Synchronization of State-based CRDTs" (arXiv:1803.02750)</a></li>
+<li><a href="https://arxiv.org/pdf/2006.09823" target="_blank">"Verifying Strong Eventual Consistency in δ-CRDTs" (arXiv:2006.09823)</a></li>
+<li><a href="https://arxiv.org/pdf/2012.00472" target="_blank">"Byzantine Eventual Consistency and the Fundamental Limits of Peer-to-Peer Databases" (arXiv:2012.00472)</a></li>
+<li><a href="https://arxiv.org/pdf/2310.18220" target="_blank">"Approaches to Conflict-free Replicated Data Types" (arXiv:2310.18220)</a></li>
+<li><a href="https://crdt.tech/implementations" target="_blank">crdt.tech — Implementations and production deployments</a></li>
+<li><a href="https://www.pingcap.com/article/understanding-crdts-and-their-role-in-distributed-systems/" target="_blank">PingCAP / TiDB — Understanding CRDTs and Their Role in Distributed Systems</a></li>
+<li><a href="https://www.iankduncan.com/engineering/2025-11-27-crdt-dictionary/" target="_blank">Ian Duncan — The CRDT Dictionary: A Field Guide</a></li>
+<li><a href="https://zylos.ai/research/2026-01-29-crdt-real-time-collaboration/" target="_blank">Zylos Research — CRDTs and Real-Time Collaboration</a></li>
+<li><a href="https://exaspark.medium.com/top-5-ways-to-implement-real-time-rich-text-editor-ranked-by-complexity-3bc26e3c777f" target="_blank">"Top 5 Ways to Implement Real-Time Rich Text Editor" — Apple Notes CRDT usage</a></li>
+<li><a href="https://www.microsoft.com/en-us/research/video/strong-eventual-consistency-and-conflict-free-replicated-data-types/" target="_blank">Microsoft Research — Strong Eventual Consistency and CRDTs (Shapiro talk)</a></li>
+<li><a href="https://www.baeldung.com/cs/eventual-consistency-vs-strong-eventual-consistency-vs-strong-consistency" target="_blank">Baeldung — Eventual vs. Strong Eventual vs. Strong Consistency</a></li>
+</ol>
+</div>
+
+</body>
+</html>

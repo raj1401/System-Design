@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CFS to EEVDF: Fair Scheduling with Virtual Runtime</title>
+<meta name="description" content="How Linux fair scheduling evolved from CFS virtual runtime and red-black trees to EEVDF lag and earliest virtual deadlines, and why that change matters for latency.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '\2192';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>CFS to EEVDF: Fair Scheduling with Virtual Runtime</h1>
+<p class="subtitle">How Linux models an ideal multitasking CPU with vruntime, red-black trees, and — since 6.6 — earliest eligible virtual deadlines.</p>
+<p class="meta">September 12, 2026 &middot; 5 min read</p>
+
+<h2>The Concept</h2>
+<p>Every time a Linux process wakes, yields, or survives a timer tick, the kernel must answer one question: <em>who runs next?</em> For ordinary tasks — <code>SCHED_NORMAL</code> / <code>SCHED_BATCH</code> — that answer has lived in the fair scheduling class for nearly two decades. Ingo Molnar's <strong>Completely Fair Scheduler (CFS)</strong>, merged in Linux 2.6.23, replaced jiffy-based timeslices and interactivity heuristics with a single idea: pretend every runnable task shares one ideal CPU equally, then approximate that fiction on real silicon by tracking <strong>virtual runtime</strong>.</p>
+<p>Since Linux 6.6 the same fair class implements <strong>EEVDF</strong> (Earliest Eligible Virtual Deadline First) — still built on virtual time, but picking the eligible task with the earliest virtual deadline instead of always running the leftmost (lowest-vruntime) node. The data structures and accounting look familiar; the selection rule and latency story do not.</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> Fair scheduling is the invisible tax every userspace thread pays. Understanding <code>vruntime</code>, lag, and virtual deadlines explains why nice levels work, why short-slice interactive work feels snappy under EEVDF, and why cgroup <code>cpu.shares</code> can carve the same CPU among groups without inventing a second scheduler.
+</div>
+
+<h2>Underlying Mechanism</h2>
+
+<h3>The ideal multitasking CPU</h3>
+<p>Kernel documentation summarizes CFS in one sentence: it models an <em>ideal, precise multi-tasking CPU</em> — hardware that could run every runnable task in parallel at <code>1/nr_running</code> of full speed. On a dual-task system each would get 50% continuously. Real cores run one task at a time, so CFS invents <strong>virtual runtime</strong> (<code>p-&gt;se.vruntime</code>, nanosecond units): the amount of CPU a task has consumed, weighted so lighter (nicer) tasks advance faster through virtual time and therefore yield sooner.</p>
+<p>Classic CFS pick logic follows directly: always try to run the task with the smallest <code>vruntime</code> — the one that has received the least fair service so far. After a tick or voluntary schedule, the time just spent is added to <code>vruntime</code>; when another task becomes sufficiently “leftmost,” the current one is preempted. A small granularity gap avoids thrashing the cache by over-scheduling.</p>
+
+<h3>The red-black timeline</h3>
+<p>Instead of the old O(1) scheduler's active/expired arrays, CFS keeps a per-CPU time-ordered red-black tree of runnable <code>sched_entity</code> nodes keyed by <code>vruntime</code>. Enqueue and dequeue are O(log n); picking the next task under classic CFS was effectively O(1) because the leftmost node was cached. Newly woken tasks are placed near the left of the tree (anchored historically by <code>min_vruntime</code>, now by EEVDF's zero-lag reference) so they cannot starve forever, yet do not instantly leapfrog everyone else.</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Classic CFS: vruntime-Ordered RB Tree</h4>
+<svg viewBox="0 0 680 340" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="340" y="22" text-anchor="middle" fill="#8b90a0" font-size="12">Per-CPU cfs_rq.tasks_timeline — sorted by se.vruntime</text>
+  <circle cx="340" cy="90" r="36" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="340" y="86" text-anchor="middle" fill="#e1e4ed" font-size="12" font-weight="600">T2</text>
+  <text x="340" y="104" text-anchor="middle" fill="#8b90a0" font-size="10">vr=120</text>
+  <circle cx="180" cy="180" r="36" fill="#232733" stroke="#ffd93d" stroke-width="2"/>
+  <text x="180" y="176" text-anchor="middle" fill="#ffd93d" font-size="12" font-weight="600">T1</text>
+  <text x="180" y="194" text-anchor="middle" fill="#8b90a0" font-size="10">vr=80</text>
+  <circle cx="500" cy="180" r="36" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="500" y="176" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">T3</text>
+  <text x="500" y="194" text-anchor="middle" fill="#8b90a0" font-size="10">vr=160</text>
+  <circle cx="100" cy="270" r="32" fill="#232733" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="100" y="266" text-anchor="middle" fill="#ff6b9d" font-size="11" font-weight="600">T0</text>
+  <text x="100" y="282" text-anchor="middle" fill="#8b90a0" font-size="10">vr=40</text>
+  <circle cx="260" cy="270" r="32" fill="#232733" stroke="#8b90a0" stroke-width="2"/>
+  <text x="260" y="266" text-anchor="middle" fill="#e1e4ed" font-size="11" font-weight="600">T1b</text>
+  <text x="260" y="282" text-anchor="middle" fill="#8b90a0" font-size="10">vr=100</text>
+  <line x1="310" y1="118" x2="210" y2="152" stroke="#2e3345" stroke-width="2"/>
+  <line x1="370" y1="118" x2="470" y2="152" stroke="#2e3345" stroke-width="2"/>
+  <line x1="152" y1="208" x2="120" y2="242" stroke="#2e3345" stroke-width="2"/>
+  <line x1="208" y1="208" x2="240" y2="242" stroke="#2e3345" stroke-width="2"/>
+  <rect x="400" y="250" width="250" height="70" rx="8" fill="#141620" stroke="#2e3345"/>
+  <text x="525" y="278" text-anchor="middle" fill="#ffd93d" font-size="12" font-weight="600">CFS picks leftmost</text>
+  <text x="525" y="298" text-anchor="middle" fill="#8b90a0" font-size="11">smallest vruntime → T0 (vr=40)</text>
+</svg>
+</div>
+
+<h3>Nice weights and accounting</h3>
+<p>Nice levels map to weights: a nice-0 task has weight 1024; nicer tasks get smaller weights, so each real nanosecond of CPU advances their <code>vruntime</code> by a larger amount. That is how CFS isolates interactive and batch work without a separate heuristic engine. Policies under the fair class are <code>SCHED_NORMAL</code>, <code>SCHED_BATCH</code> (less aggressive preemption, better for cache-friendly batch jobs), and <code>SCHED_IDLE</code> (weaker than nice 19, carefully designed to avoid priority-inversion deadlocks). Real-time <code>SCHED_FIFO</code>/<code>SCHED_RR</code> live in a different scheduling class entirely.</p>
+
+<h3>From leftmost to EEVDF</h3>
+<p>Classic CFS had one parameter per entity: weight (nice). Latency-sensitive work had to fight through heuristics — including “latency nice” experiments — because the picker only cared about who was owed the most virtual time. Peter Zijlstra's EEVDF, committed for Linux 6.6, adds a second parameter: <strong>request size</strong> (slice). Virtual deadline is:</p>
+<p><code>vd_i = vruntime_i + slice_i / weight_i</code></p>
+<p>Selection becomes: among <em>eligible</em> entities (lag ≥ 0 — owed service relative to the weighted average virtual time), pick the one with the earliest virtual deadline. Short-slice tasks therefore get preferential latency without stealing long-term fairness. The runqueue tree is augmented so eligibility pruning and deadline heaps stay O(log n).</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — EEVDF: Eligibility + Earliest Virtual Deadline</h4>
+<svg viewBox="0 0 680 300" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <line x1="40" y1="150" x2="640" y2="150" stroke="#2e3345" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="50" y="140" fill="#8b90a0" font-size="11">avg_vruntime (zero-lag reference)</text>
+  <rect x="40" y="40" width="300" height="100" rx="8" fill="#4ecdc422" stroke="#4ecdc4"/>
+  <text x="190" y="70" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">Eligible (lag ≥ 0)</text>
+  <text x="190" y="90" text-anchor="middle" fill="#8b90a0" font-size="11">owed CPU time</text>
+  <rect x="360" y="160" width="280" height="100" rx="8" fill="#ff6b9d22" stroke="#ff6b9d"/>
+  <text x="500" y="200" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">Not eligible (lag &lt; 0)</text>
+  <text x="500" y="220" text-anchor="middle" fill="#8b90a0" font-size="11">ran ahead of fair share</text>
+  <rect x="60" y="105" width="90" height="36" rx="6" fill="#232733" stroke="#ffd93d" stroke-width="2"/>
+  <text x="105" y="127" text-anchor="middle" fill="#ffd93d" font-size="11" font-weight="600">A vd=50</text>
+  <rect x="180" y="105" width="90" height="36" rx="6" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="225" y="127" text-anchor="middle" fill="#6c8cff" font-size="11" font-weight="600">B vd=90</text>
+  <rect x="400" y="175" width="90" height="36" rx="6" fill="#232733" stroke="#8b90a0"/>
+  <text x="445" y="197" text-anchor="middle" fill="#8b90a0" font-size="11">C (ahead)</text>
+  <text x="340" y="280" text-anchor="middle" fill="#ffd93d" font-size="12">Pick earliest VD among eligible → A (even if B has lower vruntime)</text>
+</svg>
+</div>
+
+<div class="comparison">
+<div class="comparison-card">
+<h4 style="color:var(--accent)">Classic CFS (≤ 6.5)</h4>
+<ul>
+<li>One parameter: weight / nice</li>
+<li>Pick leftmost (min <code>vruntime</code>)</li>
+<li>Anchored by <code>min_vruntime</code></li>
+<li>Latency tuned via heuristics and granularity knobs</li>
+</ul>
+</div>
+<div class="comparison-card">
+<h4 style="color:var(--accent2)">EEVDF (6.6+ fair class)</h4>
+<ul>
+<li>Weight plus request/slice length</li>
+<li>Pick eligible entity with earliest virtual deadline</li>
+<li>Zero-lag reference via <code>avg_vruntime</code> / <code>zero_vruntime</code></li>
+<li>Natural latency control; custom slices via <code>sched_setattr()</code></li>
+</ul>
+</div>
+</div>
+
+<h3>Scheduling classes and group fairness</h3>
+<p>The modular scheduler core dispatches through <code>sched_class</code> hooks — <code>enqueue_task</code>, <code>dequeue_task</code>, <code>pick_next_task</code>, <code>task_tick</code>, and friends — so fair, RT, and deadline policies coexist without the core encoding policy details. With <code>CONFIG_FAIR_GROUP_SCHED</code>, the same machinery applies recursively to task groups: cgroup <code>cpu.shares</code> weights entire groups the way nice weights individual tasks, which is how containers and multi-user systems divide a core fairly at the group layer before dividing within a group.</p>
+
+<div class="callout">
+<strong>Lag and sleep:</strong> Positive lag means “owed CPU”; negative lag means “ran ahead.” EEVDF must not let tasks game the system by briefly sleeping to erase negative lag, nor punish a task forever after a long sleep. Current designs decay lag over virtual time (including deferred dequeue while sleeping) so fairness and exploit-resistance stay aligned.
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+<div class="use-case">
+<div class="label">Desktop interactivity</div>
+<div class="desc">Short-slice UI and audio threads become eligible with earlier virtual deadlines under EEVDF, improving responsiveness without a separate interactive heuristic.</div>
+</div>
+<div class="use-case">
+<div class="label">Container CPU shares</div>
+<div class="desc">Fair group scheduling turns cgroup <code>cpu.shares</code> into hierarchical weights on the same virtual-time machinery used for nice levels.</div>
+</div>
+<div class="use-case">
+<div class="label">Batch vs latency workloads</div>
+<div class="desc"><code>SCHED_BATCH</code> and longer base slices favor cache locality; latency-sensitive apps can request tailored slices through <code>sched_setattr()</code>.</div>
+</div>
+<div class="use-case">
+<div class="label">Kernel / systems tuning</div>
+<div class="desc">Debugfs knobs such as <code>base_slice_ns</code> (formerly granularity/min_granularity naming) slide the fair class between desktop and server batching behavior.</div>
+</div>
+</div>
+
+<h2>Trade-offs at a Glance</h2>
+<div class="comparison">
+<div class="comparison-card">
+<h4 style="color:var(--accent)">Strengths</h4>
+<ul>
+<li>Nanosecond accounting independent of HZ</li>
+<li>Deterministic progress: every runnable entity eventually becomes eligible</li>
+<li>Extensible scheduling classes and cgroup hierarchy</li>
+<li>EEVDF encodes latency in the deadline rather than brittle heuristics</li>
+</ul>
+</div>
+<div class="comparison-card">
+<h4 style="color:var(--accent3)">Costs &amp; caveats</h4>
+<ul>
+<li>RB-tree updates on every enqueue/dequeue (O(log n))</li>
+<li>Lag placement and sleep decay are subtle and still evolving</li>
+<li>Cross-CPU load balancing remains a separate, hard problem</li>
+<li>Docs historically lag code — always check <code>kernel/sched/fair.c</code></li>
+</ul>
+</div>
+</div>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://docs.kernel.org/scheduler/sched-design-CFS.html" target="_blank">CFS Scheduler — The Linux Kernel documentation</a></li>
+<li><a href="https://docs.kernel.org/scheduler/sched-eevdf.html" target="_blank">EEVDF Scheduler — The Linux Kernel documentation</a></li>
+<li><a href="https://lists.openwall.net/linux-kernel/2007/04/13/254" target="_blank">Ingo Molnar — Announce: Modular Scheduler Core and Completely Fair Scheduler [CFS] (LKML, Apr 2007)</a></li>
+<li><a href="https://lists.openwall.net/linux-kernel/2023/08/28/1146" target="_blank">GIT PULL: Scheduler changes for v6.6 — EEVDF introduction (LKML)</a></li>
+<li><a href="https://lwn.net/Articles/925371/" target="_blank">LWN — An EEVDF CPU scheduler for Linux</a></li>
+<li><a href="https://lwn.net/Articles/969062/" target="_blank">LWN — Completing the EEVDF scheduler</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/kernel/sched/fair.c" target="_blank">kernel/sched/fair.c — fair scheduling class implementation</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Completely_Fair_Scheduler" target="_blank">Completely Fair Scheduler — Wikipedia (historical overview)</a></li>
+</ol>
+</div>
+
+</body>
+</html>

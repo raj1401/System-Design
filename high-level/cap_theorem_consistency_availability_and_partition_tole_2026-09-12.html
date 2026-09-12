@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CAP Theorem: Consistency, Availability, and Partition Tolerance</title>
+<meta name="description" content="A clear explanation of the CAP theorem, why pick two of three is misleading, how partitions force a consistency vs availability choice, and how PACELC extends the model.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '\2192';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>CAP Theorem: Consistency, Availability, and Partition Tolerance</h1>
+<p class="subtitle">Why distributed data stores cannot promise linearizability and uninterrupted responses when the network splits — and how modern systems actually navigate that tradeoff.</p>
+<p class="meta">September 12, 2026 &middot; 5 min read</p>
+
+<h2>The Concept, In Short</h2>
+<p>
+The <strong>CAP theorem</strong> (also called Brewer's theorem) states that a networked shared-data system cannot simultaneously guarantee
+<strong>consistency</strong>, <strong>availability</strong>, and <strong>partition tolerance</strong>.
+Eric Brewer presented the idea as a conjecture at PODC 2000; Seth Gilbert and Nancy Lynch of MIT proved it formally in 2002,
+establishing it as a theorem rather than folk wisdom.
+</p>
+<p>
+In Gilbert and Lynch's formulation, consistency means
+<em>atomic</em> (linearizable) behavior: every read returns the most recent completed write (or an error).
+Availability means every request to a non-failing node eventually gets a response.
+Partition tolerance means the system keeps operating even when arbitrarily many messages between nodes are lost.
+During a network split, you must either refuse some requests (lose availability) or risk returning stale data (lose consistency).
+There is no third option that preserves both.
+</p>
+
+<div class="callout">
+  <strong>The key correction:</strong> the popular &ldquo;pick any two of three&rdquo; slogan is misleading.
+  Brewer later clarified that partitions are not a design choice you can simply refuse —
+  networks fail, fibers get cut, BGP misconfigures.
+  The real decision is: <em>when</em> a partition happens, do you favor consistency or availability?
+  Outside of partitions, you can (and should) aim for both C and A.
+</div>
+
+<h2>How the Impossibility Actually Works</h2>
+<p>
+Imagine two nodes, G1 and G2, that can no longer exchange messages.
+A client writes a new value to G1; by availability the write must complete.
+Later a client reads from G2; by availability G2 must answer.
+But G2 never saw the write, so if it returns the old value it violates linearizability,
+and if it refuses to answer it violates availability.
+That constructive argument is the heart of Gilbert and Lynch's proof in both the asynchronous and partially synchronous models.
+</p>
+
+<h3>What each letter really means</h3>
+<p>
+<strong>C — Consistency.</strong> CAP's C is single-copy linearizability, not the &ldquo;C&rdquo; in ACID.
+ACID consistency is about preserving database invariants (unique keys, foreign keys);
+CAP consistency is about every node agreeing on the latest value of a single object.
+Confusing the two letters is a common source of design mistakes.
+</p>
+<p>
+<strong>A — Availability.</strong> CAP availability is stronger than everyday &ldquo;high availability&rdquo; SLAs:
+<em>every</em> non-failed node that receives a request must respond, even if it sits alone on the wrong side of a partition.
+Timeouts that abort an operation to protect consistency are, under CAP, a deliberate sacrifice of A.
+</p>
+<p>
+<strong>P — Partition tolerance.</strong> In practice you cannot &ldquo;choose CA and forfeit P.&rdquo;
+If a partition occurs, a CA-oriented design must still fall back to CP or AP behavior.
+Choosing CA only makes sense when the probability of partitions is negligible compared with other failures
+(for example, a carefully engineered single datacenter).
+</p>
+
+<div class="diagram-container">
+  <h4>Partition Forces the C vs A Choice</h4>
+  <svg viewBox="0 0 720 380" width="100%" style="max-width:720px" font-family="Inter,sans-serif">
+    <path d="M360 40 L345 70 L375 100 L345 130 L375 160 L345 190 L375 220 L360 250"
+          fill="none" stroke="#ff6b9d" stroke-width="2.5" stroke-dasharray="6,4"/>
+    <text x="360" y="30" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">NETWORK PARTITION</text>
+    <rect x="40" y="80" width="200" height="140" rx="12" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+    <text x="140" y="115" text-anchor="middle" fill="#6c8cff" font-size="16" font-weight="700">Node G1</text>
+    <text x="140" y="145" text-anchor="middle" fill="#e1e4ed" font-size="13">WRITE(x = 7)</text>
+    <text x="140" y="170" text-anchor="middle" fill="#4ecdc4" font-size="12">completes OK</text>
+    <text x="140" y="195" text-anchor="middle" fill="#8b90a0" font-size="11">local value: 7</text>
+    <rect x="480" y="80" width="200" height="140" rx="12" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+    <text x="580" y="115" text-anchor="middle" fill="#4ecdc4" font-size="16" font-weight="700">Node G2</text>
+    <text x="580" y="145" text-anchor="middle" fill="#e1e4ed" font-size="13">READ(x)</text>
+    <text x="580" y="170" text-anchor="middle" fill="#ffd93d" font-size="12">must answer</text>
+    <text x="580" y="195" text-anchor="middle" fill="#8b90a0" font-size="11">knows only: 0</text>
+    <rect x="60" y="280" width="260" height="70" rx="10" fill="#1a1d27" stroke="#ffd93d" stroke-width="1.5"/>
+    <text x="190" y="308" text-anchor="middle" fill="#ffd93d" font-size="13" font-weight="600">Choose Consistency (CP)</text>
+    <text x="190" y="330" text-anchor="middle" fill="#8b90a0" font-size="11">G2 refuses or errors - lose A</text>
+    <rect x="400" y="280" width="260" height="70" rx="10" fill="#1a1d27" stroke="#ff6b9d" stroke-width="1.5"/>
+    <text x="530" y="308" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="600">Choose Availability (AP)</text>
+    <text x="530" y="330" text-anchor="middle" fill="#8b90a0" font-size="11">G2 returns 0 - lose C</text>
+  </svg>
+</div>
+
+<h2>Beyond &ldquo;2 of 3&rdquo;: Managing Partitions</h2>
+<p>
+Brewer's 2012 retrospective argued that CAP only forbids a tiny corner of the design space:
+<em>perfect</em> consistency and <em>perfect</em> availability during a partition.
+Everywhere else there is room to optimize.
+A practical partition strategy has three steps:
+detect the partition (usually via timeouts),
+enter an explicit partition mode that may limit risky operations,
+and run recovery that restores consistency and compensates for mistakes once communication returns.
+</p>
+<p>
+Partitions and latency are deeply related.
+Operationally, a partition is a time bound on communication:
+retry forever and you have chosen C over A; proceed without agreement and you risk inconsistency.
+Systems with tighter latency SLOs enter &ldquo;partition mode&rdquo; more often — sometimes when the network is merely slow.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">CP-leaning systems</h4>
+    <ul>
+      <li>Prefer linearizability; minority partitions refuse writes</li>
+      <li>Use consensus (Raft, Paxos) or quorums</li>
+      <li>Examples: etcd, ZooKeeper, Spanner, HBase</li>
+      <li>Right for money movement, locks, config</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">AP-leaning systems</h4>
+    <ul>
+      <li>Keep answering on both sides of a split</li>
+      <li>Reconcile with version vectors, CRDTs, or last-writer-wins</li>
+      <li>Examples: Dynamo-style stores, Cassandra, Riak</li>
+      <li>Right for carts, feeds, caches, telemetry</li>
+    </ul>
+  </div>
+</div>
+
+<h2>PACELC: The Tradeoff When Nothing Is Broken</h2>
+<p>
+Daniel Abadi observed that CAP only describes behavior <em>during</em> partitions, yet partitions are rare.
+Most of the time the dominant tension is
+<strong>consistency versus latency</strong>:
+stronger consistency forces more replicas to coordinate, adding round trips.
+His PACELC formulation captures both axes:
+</p>
+<p style="text-align:center;font-size:1.05em;margin:20px 0;">
+<code>if Partition → choose Availability or Consistency;</code><br>
+<code>Else → choose Latency or Consistency</code>
+</p>
+
+<div class="diagram-container">
+  <h4>PACELC Decision Tree</h4>
+  <svg viewBox="0 0 720 300" width="100%" style="max-width:720px" font-family="Inter,sans-serif">
+    <rect x="260" y="20" width="200" height="44" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+    <text x="360" y="48" text-anchor="middle" fill="#e1e4ed" font-size="14" font-weight="600">Network healthy?</text>
+    <path d="M280 64 L160 110" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <path d="M440 64 L560 110" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <text x="200" y="95" fill="#ff6b9d" font-size="11" font-weight="600">NO (P)</text>
+    <text x="500" y="95" fill="#4ecdc4" font-size="11" font-weight="600">YES (E)</text>
+    <rect x="60" y="120" width="200" height="40" rx="8" fill="#1a1d27" stroke="#ff6b9d" stroke-width="1.5"/>
+    <text x="160" y="145" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="600">Partition mode</text>
+    <path d="M110 160 L80 200" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <path d="M210 160 L240 200" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <rect x="20" y="210" width="120" height="56" rx="8" fill="#232733" stroke="#ffd93d" stroke-width="1.5"/>
+    <text x="80" y="235" text-anchor="middle" fill="#ffd93d" font-size="13" font-weight="600">PA</text>
+    <text x="80" y="252" text-anchor="middle" fill="#8b90a0" font-size="10">favor availability</text>
+    <rect x="180" y="210" width="120" height="56" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+    <text x="240" y="235" text-anchor="middle" fill="#6c8cff" font-size="13" font-weight="600">PC</text>
+    <text x="240" y="252" text-anchor="middle" fill="#8b90a0" font-size="10">favor consistency</text>
+    <rect x="460" y="120" width="200" height="40" rx="8" fill="#1a1d27" stroke="#4ecdc4" stroke-width="1.5"/>
+    <text x="560" y="145" text-anchor="middle" fill="#4ecdc4" font-size="13" font-weight="600">Normal operation</text>
+    <path d="M510 160 L480 200" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <path d="M610 160 L640 200" fill="none" stroke="#8b90a0" stroke-width="1.5"/>
+    <rect x="420" y="210" width="120" height="56" rx="8" fill="#232733" stroke="#ffd93d" stroke-width="1.5"/>
+    <text x="480" y="235" text-anchor="middle" fill="#ffd93d" font-size="13" font-weight="600">EL</text>
+    <text x="480" y="252" text-anchor="middle" fill="#8b90a0" font-size="10">favor low latency</text>
+    <rect x="580" y="210" width="120" height="56" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+    <text x="640" y="235" text-anchor="middle" fill="#6c8cff" font-size="13" font-weight="600">EC</text>
+    <text x="640" y="252" text-anchor="middle" fill="#8b90a0" font-size="10">favor consistency</text>
+  </svg>
+</div>
+
+<p>
+Abadi's taxonomy maps real systems onto these combinations:
+Dynamo, Cassandra, and Riak are typically <code>PA/EL</code>;
+VoltDB/H-Store and Megastore are <code>PC/EC</code>;
+Yahoo's PNUTS is <code>PC/EL</code>;
+MongoDB is often described as roughly <code>PA/EC</code>.
+Labels are approximations — many databases expose tunable quorum levels that move them along the spectrum.
+</p>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Payments &amp; ledgers</div>
+    <div class="desc">Banks and payment rails lean CP/PC-EC: refusing a debit during a split beats double-spending. Reconciliation and compensating transactions clean up the rare overdraft (Brewer's ATM example).</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Shopping carts</div>
+    <div class="desc">Amazon Dynamo famously chose availability: during a partition, carts on both sides accept updates and merge with a set-union CRDT-style approach, accepting that deleted items may reappear.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Global config / locks</div>
+    <div class="desc">Chubby, etcd, and ZooKeeper use consensus so only a quorum partition serves writes — classic CP behavior for coordination metadata.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">CDN &amp; edge caches</div>
+    <div class="desc">Content delivery networks are AP by nature: edge POPs keep serving slightly stale content rather than erroring when origin connectivity drops.</div>
+  </div>
+</div>
+
+<div class="callout">
+  <strong>Design takeaway:</strong> do not treat CAP as a bumper sticker for your database.
+  Decide per operation, per data type, and per failure mode.
+  Detect partitions explicitly, limit operations that would break hard invariants,
+  and plan recovery (including user-visible compensation) before you need it.
+</div>
+
+<h2>Closing Thought</h2>
+<p>
+CAP is an impossibility result, not a product feature matrix.
+It tells you that during a split you cannot have both linearizable reads and uninterrupted responses —
+full stop.
+Everything else is engineering: timeouts that define when you enter partition mode,
+quorum and consensus protocols when correctness matters more than uptime,
+eventual consistency and CRDTs when uptime matters more than a single global truth,
+and PACELC to remind you that even on a healthy network you still pay latency for stronger consistency.
+Master the precise definitions, then pick the tradeoffs your users can live with.
+</p>
+
+<div class="sources">
+  <h2>Sources &amp; Further Reading</h2>
+  <ol>
+    <li><a href="https://www.comp.nus.edu.sg/~gilbert/pubs/BrewersConjecture-SigAct.pdf">Seth Gilbert &amp; Nancy Lynch — Brewer's Conjecture and the Feasibility of Consistent, Available, Partition-Tolerant Web Services (ACM SIGACT News, 2002)</a></li>
+    <li><a href="https://dl.acm.org/doi/10.1145/343477.343502">Eric A. Brewer — Towards Robust Distributed Systems (PODC 2000 invited talk abstract)</a></li>
+    <li><a href="https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/">Eric Brewer — CAP Twelve Years Later: How the &ldquo;Rules&rdquo; Have Changed (IEEE Computer / InfoQ, 2012)</a></li>
+    <li><a href="https://doi.org/10.1109/mc.2012.37">Brewer — CAP twelve years later (IEEE Computer, DOI 10.1109/mc.2012.37)</a></li>
+    <li><a href="https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf">Daniel J. Abadi — Consistency Tradeoffs in Modern Distributed Database System Design: CAP is Only Part of the Story (IEEE Computer, 2012)</a></li>
+    <li><a href="https://en.wikipedia.org/wiki/CAP_theorem">Wikipedia — CAP theorem</a></li>
+    <li><a href="https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html">Werner Vogels / Amazon — Dynamo: Amazon's Highly Available Key-value Store (overview)</a></li>
+    <li><a href="https://doi.org/10.1145/3197406.3197420">Proving PACELC (ACM, DOI 10.1145/3197406.3197420)</a></li>
+  </ol>
+</div>
+
+</body>
+</html>

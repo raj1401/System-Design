@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NUMA: Local Allocation, Memory Policy, and Cross-Node Latency</title>
+<meta name="description" content="How Linux places pages on NUMA nodes by default, what local versus remote memory costs, and how set_mempolicy, mbind, and numactl steer placement for latency or bandwidth.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>NUMA: Local Allocation, Memory Policy, and Cross-Node Latency</h1>
+<p class="subtitle">Why a page allocated on the wrong socket can cost more than a cache miss — and how Linux decides where your bytes live.</p>
+<p class="meta">September 15, 2026 &middot; 5 min read</p>
+
+<h2>The Concept</h2>
+<p><strong>NUMA</strong> (Non-Uniform Memory Access) means DRAM is partitioned into <em>nodes</em>, each close to a set of CPUs (typically one socket or one chiplet cluster). A load from the CPU’s own node is <em>local</em>; a load that crosses the interconnect to another node’s memory is <em>remote</em>. Remote accesses pay higher latency and often lower effective bandwidth, even though the address space looks flat to userspace.</p>
+<p>On a two-socket server, remote DRAM can easily add tens of nanoseconds versus local DRAM — enough that database buffer pools, JVM heaps, and HPC working sets that land on the wrong node silently lose a large fraction of throughput. The Linux kernel’s job is to keep allocations local by default, then give you policies when that default is wrong.</p>
+
+<div class="callout">
+<strong>Key idea:</strong> Virtual addresses do not encode NUMA nodes. Placement is decided when a page is first faulted in (first-touch local allocation), then optionally steered with <code>set_mempolicy</code>, <code>mbind</code>, or <code>numactl</code>. A page that already lives on node 1 will not magically move when your thread migrates to a CPU on node 0 — unless you migrate it.
+</div>
+
+<h2>Underlying Mechanism</h2>
+
+<h3>Nodes, distances, and zonelists</h3>
+<p>Each NUMA node owns a slice of physical memory and a set of CPUs. Firmware publishes a distance table (ACPI SLIT / SRAT on x86); Linux turns that into per-node <em>zonelists</em> ordered by how close each memory zone is. When a CPU on node 0 allocates, the kernel walks node 0’s zonelist first — that is <strong>local allocation</strong>.</p>
+<p>If the local node is out of free pages, the allocator falls back to the next entry in the zonelist (a nearby remote node). That fallback is why a process can keep running under memory pressure, and also why remote pages appear without any explicit request.</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — Two-Node NUMA Topology</h4>
+<svg viewBox="0 0 680 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#8b90a0"/>
+    </marker>
+    <marker id="arrLocal" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#4ecdc4"/>
+    </marker>
+    <marker id="arrRemote" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#ff6b9d"/>
+    </marker>
+  </defs>
+
+  <!-- Node 0 -->
+  <rect x="30" y="40" width="260" height="220" rx="14" fill="#1a1d27" stroke="#6c8cff" stroke-width="2"/>
+  <text x="160" y="68" text-anchor="middle" fill="#6c8cff" font-size="14" font-weight="700">Node 0</text>
+  <rect x="55" y="85" width="100" height="50" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="105" y="115" text-anchor="middle" fill="#e1e4ed" font-size="12">CPUs</text>
+  <rect x="165" y="85" width="100" height="50" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="215" y="115" text-anchor="middle" fill="#e1e4ed" font-size="12">DRAM</text>
+  <text x="160" y="170" text-anchor="middle" fill="#8b90a0" font-size="11">local latency ~lowest</text>
+  <path d="M105,135 L105,200 L215,200 L215,135" fill="none" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arrLocal)"/>
+  <text x="160" y="220" text-anchor="middle" fill="#4ecdc4" font-size="11">local access</text>
+
+  <!-- interconnect -->
+  <path d="M290,150 L390,150" stroke="#8b90a0" stroke-width="2.5" marker-end="url(#arr)"/>
+  <path d="M390,165 L290,165" stroke="#8b90a0" stroke-width="2.5" marker-end="url(#arr)"/>
+  <text x="340" y="130" text-anchor="middle" fill="#8b90a0" font-size="11">QPI / UPI / Infinity Fabric</text>
+
+  <!-- Node 1 -->
+  <rect x="390" y="40" width="260" height="220" rx="14" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="520" y="68" text-anchor="middle" fill="#ff6b9d" font-size="14" font-weight="700">Node 1</text>
+  <rect x="415" y="85" width="100" height="50" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="465" y="115" text-anchor="middle" fill="#e1e4ed" font-size="12">CPUs</text>
+  <rect x="525" y="85" width="100" height="50" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="575" y="115" text-anchor="middle" fill="#e1e4ed" font-size="12">DRAM</text>
+  <text x="520" y="170" text-anchor="middle" fill="#8b90a0" font-size="11">remote from Node 0 CPUs</text>
+
+  <!-- remote path annotation -->
+  <path d="M105,100 C 180,20 500,20 575,85" fill="none" stroke="#ff6b9d" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arrRemote)"/>
+  <text x="340" y="28" text-anchor="middle" fill="#ff6b9d" font-size="11">remote DRAM access (higher latency)</text>
+
+  <text x="340" y="300" text-anchor="middle" fill="#8b90a0" font-size="12">Same virtual address space; different physical costs depending on which node owns the page.</text>
+</svg>
+</div>
+
+<h3>First-touch local allocation</h3>
+<p>Linux’s system default after boot (once <code>init</code> starts) is local allocation: pages are taken from the node of the CPU that triggered the allocation — typically the first write that faults the page in after <code>mmap</code> or heap growth. Read-only mappings and pages only touched by another thread can still end up “wrong” relative to the eventual worker CPUs.</p>
+<p>That is why NUMA-sensitive services often <em>pre-touch</em> memory on the intended node (or pin threads with <code>sched_setaffinity</code> / <code>numactl --cpunodebind</code> before allocating). Automatic NUMA balancing can later migrate pages toward the CPUs that fault them, but that is reactive and not free.</p>
+
+<h3>Memory policies: latency vs bandwidth</h3>
+<p>Linux exposes a small set of modes via <code>set_mempolicy(2)</code> (task-wide) and <code>mbind(2)</code> (per address range). The important ones:</p>
+<ul style="margin: 0 0 16px 20px; color: var(--text-dim);">
+<li style="margin-bottom:8px;"><code>MPOL_DEFAULT</code> / <code>MPOL_LOCAL</code> — allocate on the CPU’s local node; fall back if it is empty.</li>
+<li style="margin-bottom:8px;"><code>MPOL_BIND</code> — only allocate from the listed nodes (strict); fails if they cannot satisfy the request.</li>
+<li style="margin-bottom:8px;"><code>MPOL_PREFERRED</code> — try a preferred node first, then fall back.</li>
+<li style="margin-bottom:8px;"><code>MPOL_INTERLEAVE</code> — round-robin pages across nodes to maximize aggregate bandwidth when a working set is larger than one node’s DRAM or is accessed from many sockets.</li>
+</ul>
+<p>By default, a new VMA policy affects <em>future</em> allocations only. Since Linux 2.6.16, <code>mbind</code> can also migrate existing pages (<code>MPOL_MF_MOVE</code> / <code>MPOL_MF_MOVE_ALL</code>) so the range physically matches the new policy.</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Policy Choice: Local vs Interleave</h4>
+<svg viewBox="0 0 680 280" width="100%" height="280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <!-- Local -->
+  <rect x="20" y="30" width="300" height="220" rx="12" fill="#232733" stroke="#4ecdc4"/>
+  <text x="170" y="58" text-anchor="middle" fill="#4ecdc4" font-size="13" font-weight="700">MPOL_LOCAL (latency)</text>
+  <rect x="50" y="80" width="70" height="40" rx="6" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="85" y="105" text-anchor="middle" fill="#e1e4ed" font-size="11">CPU</text>
+  <rect x="160" y="80" width="120" height="40" rx="6" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="220" y="105" text-anchor="middle" fill="#e1e4ed" font-size="11">pages on node 0</text>
+  <path d="M120,100 L160,100" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="170" y="150" text-anchor="middle" fill="#8b90a0" font-size="11">Best when one thread (or one</text>
+  <text x="170" y="168" text-anchor="middle" fill="#8b90a0" font-size="11">socket’s workers) owns the data.</text>
+  <text x="170" y="200" text-anchor="middle" fill="#8b90a0" font-size="11">Minimizes per-access latency.</text>
+  <text x="170" y="230" text-anchor="middle" fill="#4ecdc4" font-size="11">numactl --membind=0</text>
+
+  <!-- Interleave -->
+  <rect x="360" y="30" width="300" height="220" rx="12" fill="#232733" stroke="#ff6b9d"/>
+  <text x="510" y="58" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="700">MPOL_INTERLEAVE (bandwidth)</text>
+  <rect x="390" y="80" width="50" height="36" rx="6" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="415" y="103" text-anchor="middle" fill="#e1e4ed" font-size="10">N0</text>
+  <rect x="460" y="80" width="50" height="36" rx="6" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="485" y="103" text-anchor="middle" fill="#e1e4ed" font-size="10">N1</text>
+  <rect x="530" y="80" width="50" height="36" rx="6" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="555" y="103" text-anchor="middle" fill="#e1e4ed" font-size="10">N2</text>
+  <rect x="600" y="80" width="40" height="36" rx="6" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="620" y="103" text-anchor="middle" fill="#e1e4ed" font-size="10">…</text>
+  <text x="510" y="150" text-anchor="middle" fill="#8b90a0" font-size="11">Pages striped across nodes.</text>
+  <text x="510" y="168" text-anchor="middle" fill="#8b90a0" font-size="11">Best for large, shared, multi-</text>
+  <text x="510" y="186" text-anchor="middle" fill="#8b90a0" font-size="11">socket streaming workloads.</text>
+  <text x="510" y="218" text-anchor="middle" fill="#8b90a0" font-size="11">One page still has one-node BW.</text>
+  <text x="510" y="240" text-anchor="middle" fill="#ff6b9d" font-size="11">numactl --interleave=all</text>
+</svg>
+</div>
+
+<div class="comparison">
+<div class="comparison-card">
+<h4 style="color:var(--accent)">Task policy (<code>set_mempolicy</code>)</h4>
+<ul>
+<li>Applies to future anonymous and private mmap allocations for the thread</li>
+<li>Inherited across <code>fork</code>; typically set before workers allocate</li>
+<li>CLI: <code>numactl --membind=N ./app</code></li>
+</ul>
+</div>
+<div class="comparison-card">
+<h4 style="color:var(--accent2)">VMA / shared policy (<code>mbind</code>)</h4>
+<ul>
+<li>Scoped to a byte range — ideal for one buffer or shm segment</li>
+<li>Can migrate pages already faulted in with MOVE flags</li>
+<li>Shared mappings can carry a shared policy visible to all attachers</li>
+</ul>
+</div>
+</div>
+
+<h3>Affinity is half the story</h3>
+<p>Memory policy without CPU affinity is incomplete. If threads bounce across sockets while pages stay put, every access becomes remote. Pair placement with <code>sched_setaffinity(2)</code>, cpusets, or <code>numactl --cpunodebind</code>. Inspect live placement with <code>numactl --hardware</code> and <code>/proc/&lt;pid&gt;/numa_maps</code>.</p>
+
+<div class="callout">
+<strong>Gotcha:</strong> Kernel boot-time structures often use interleave so no single node is overloaded with OS metadata. Once userspace starts, the default flips to local. Your app’s first page faults — not <code>mmap</code> itself — are usually when placement is decided.
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+<div class="use-case">
+<div class="label">Databases &amp; in-memory stores</div>
+<div class="desc">Pin buffer pools and worker threads to the same node (or shard pools per node) so index probes and page reads stay local.</div>
+</div>
+<div class="use-case">
+<div class="label">JVMs and language runtimes</div>
+<div class="desc">Large heaps allocated on the wrong socket show up as mysterious GC and mutator slowdowns; launchers often wrap the process in numactl.</div>
+</div>
+<div class="use-case">
+<div class="label">HPC and scientific codes</div>
+<div class="desc">OpenMP/MPI ranks bind to nodes; interleaved or per-rank bind policies keep multi-GB arrays near the cores that stream them.</div>
+</div>
+<div class="use-case">
+<div class="label">Containers &amp; cpusets</div>
+<div class="desc">Cpuset memory nodes constrain which NUMA nodes a pod may use; local policy then allocates inside that allowed set.</div>
+</div>
+</div>
+
+<h2>Trade-offs at a Glance</h2>
+<div class="comparison">
+<div class="comparison-card">
+<h4 style="color:var(--accent)">Optimize for locality</h4>
+<ul>
+<li>Lower latency per load/store</li>
+<li>Requires stable CPU↔memory affinity</li>
+<li>Risk of underusing remote DRAM capacity</li>
+</ul>
+</div>
+<div class="comparison-card">
+<h4 style="color:var(--accent2)">Optimize for bandwidth / capacity</h4>
+<ul>
+<li>Interleave or span multiple nodes</li>
+<li>Better aggregate BW for shared data</li>
+<li>Every access may pay some remote cost</li>
+</ul>
+</div>
+</div>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://docs.kernel.org/mm/numa.html" target="_blank">Linux Kernel Docs — What is NUMA?</a></li>
+<li><a href="https://docs.kernel.org/admin-guide/mm/numa_memory_policy.html" target="_blank">Linux Kernel Docs — NUMA Memory Policy</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/set_mempolicy.2.html" target="_blank">set_mempolicy(2) — Linux man-pages</a></li>
+<li><a href="https://man7.org/linux/man-pages/man2/mbind.2.html" target="_blank">mbind(2) — Linux man-pages</a></li>
+<li><a href="https://man7.org/linux/man-pages/man8/numactl.8.html" target="_blank">numactl(8) — Linux man-pages</a></li>
+<li><a href="https://cacm.acm.org/practice/an-overview-of-non-uniform-memory-access/" target="_blank">Lameter, C. — An Overview of Non-Uniform Memory Access (CACM)</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/Documentation/mm/numa.rst" target="_blank">torvalds/linux — Documentation/mm/numa.rst</a></li>
+<li><a href="https://kernel-internals.org/mm/numa/" target="_blank">NUMA — Linux Kernel Internals (summary of policies and tools)</a></li>
+</ol>
+</div>
+
+</body>
+</html>

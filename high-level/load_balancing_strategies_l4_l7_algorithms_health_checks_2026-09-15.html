@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Load Balancing Strategies: L4/L7 Algorithms, Health Checks &amp; Sticky Sessions</title>
+<meta name="description" content="How L4 vs L7 load balancers, round-robin, least connections, weighted and consistent-hash routing, health checks, and sticky sessions keep distributed services scalable and resilient.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Load Balancing Strategies: L4/L7 Algorithms, Health Checks &amp; Sticky Sessions</h1>
+<p class="subtitle">Spreading traffic so no single machine becomes the bottleneck — and failing over when one does</p>
+<p class="meta">September 15, 2026 &middot; 5 min read</p>
+
+<h2>The Concept, Briefly</h2>
+<p>
+A <strong>load balancer</strong> sits in front of a pool of backends and decides, for each connection or request, which healthy server should handle it. Done well, this multiplies capacity, hides individual failures, and unlocks rolling deploys. Done poorly, it concentrates load, breaks sessions, or sends traffic to dead hosts.
+</p>
+<p>
+The design space has three axes: <em>where</em> you balance (Layer 4 vs Layer 7), <em>how</em> you pick a backend (round-robin, least connections, weighted, consistent hash), and <em>how</em> you stay correct under failure (health checks, sticky sessions / affinity).
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> Horizontal scale only works if the front door can spread work fairly and stop routing to unhealthy nodes. L4 gives raw speed; L7 gives content-aware routing. Algorithm choice and health checks decide whether your cluster actually stays balanced when load, latency, and membership change.
+</div>
+
+<h2>Underlying Ideas &amp; Mechanisms</h2>
+
+<h3>Layer 4 vs Layer 7</h3>
+<p>
+<strong>Layer 4 (transport)</strong> balancers forward TCP/UDP flows using connection metadata — typically a hash of the 5-tuple (protocol, source/destination IP and port). They do not inspect HTTP. Latency is minimal and any protocol works. <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html">AWS Network Load Balancer</a> and Google's <a href="https://research.google/pubs/maglev-a-fast-and-reliable-software-network-load-balancer/">Maglev</a> are classic L4 designs; Maglev combines ECMP to LB machines with consistent hashing and connection tracking for connection-oriented protocols.
+</p>
+<p>
+<strong>Layer 7 (application)</strong> balancers terminate TLS, parse HTTP, and route on host, path, headers, cookies, or gRPC metadata. They enable path-based microservices routing, A/B and canary splits, and WAF integration — at the cost of more CPU. <a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/introduction.html">AWS Application Load Balancer</a> defaults to round robin (or least outstanding requests) per target group after evaluating listener rules. NGINX, HAProxy (HTTP mode), Envoy, and Traefik dominate the software L7 space.
+</p>
+
+<div class="diagram-container">
+<h4>L4 Flow Forwarding vs L7 Content-Aware Routing</h4>
+<svg viewBox="0 0 760 320" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="20" y="130" width="90" height="50" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="65" y="160" text-anchor="middle" fill="#e1e4ed" font-size="13" font-weight="600">Clients</text>
+  <line x1="110" y1="140" x2="180" y2="90" stroke="#8b90a0" stroke-width="1.5"/>
+  <line x1="110" y1="170" x2="180" y2="220" stroke="#8b90a0" stroke-width="1.5"/>
+  <rect x="180" y="50" width="160" height="80" rx="10" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="260" y="80" text-anchor="middle" fill="#4ecdc4" font-size="13" font-weight="700">L4 Balancer</text>
+  <text x="260" y="100" text-anchor="middle" fill="#8b90a0" font-size="11">TCP/UDP · 5-tuple hash</text>
+  <text x="260" y="116" text-anchor="middle" fill="#8b90a0" font-size="11">NLB · Maglev · stream</text>
+  <rect x="180" y="190" width="160" height="80" rx="10" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="260" y="220" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="700">L7 Balancer</text>
+  <text x="260" y="240" text-anchor="middle" fill="#8b90a0" font-size="11">HTTP path/host/cookie</text>
+  <text x="260" y="256" text-anchor="middle" fill="#8b90a0" font-size="11">ALB · NGINX · Envoy</text>
+  <rect x="420" y="40" width="100" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="470" y="63" text-anchor="middle" fill="#e1e4ed" font-size="12">Backend A</text>
+  <rect x="540" y="40" width="100" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="590" y="63" text-anchor="middle" fill="#e1e4ed" font-size="12">Backend B</text>
+  <rect x="660" y="40" width="80" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="700" y="63" text-anchor="middle" fill="#e1e4ed" font-size="12">Backend C</text>
+  <line x1="340" y1="90" x2="420" y2="58" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="340" y1="90" x2="540" y2="58" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="340" y1="90" x2="660" y2="58" stroke="#4ecdc4" stroke-width="1.5"/>
+  <rect x="420" y="180" width="140" height="40" rx="6" fill="#232733" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="490" y="205" text-anchor="middle" fill="#e1e4ed" font-size="12">/api → API svc</text>
+  <rect x="580" y="180" width="160" height="40" rx="6" fill="#232733" stroke="#ffd93d" stroke-width="1.5"/>
+  <text x="660" y="205" text-anchor="middle" fill="#e1e4ed" font-size="12">/static → CDN edge</text>
+  <rect x="480" y="250" width="160" height="40" rx="6" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="560" y="275" text-anchor="middle" fill="#e1e4ed" font-size="12">canary: 10% → v2</text>
+  <line x1="340" y1="230" x2="420" y2="200" stroke="#ff6b9d" stroke-width="1.5"/>
+  <line x1="340" y1="230" x2="580" y2="200" stroke="#ffd93d" stroke-width="1.5"/>
+  <line x1="340" y1="230" x2="480" y2="250" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="380" y="310" text-anchor="middle" fill="#8b90a0" font-size="12">L4 spreads connections blindly; L7 routes by application semantics.</text>
+</svg>
+</div>
+
+<h3>Core Selection Algorithms</h3>
+<p>
+<a href="https://nginx.org/en/docs/http/ngx_http_upstream_module.html">NGINX's upstream module</a> documents the industry defaults clearly. By default, requests use <strong>weighted round-robin</strong>: each server gets a share of traffic proportional to its <code>weight</code>. With equal weights this is classic round-robin — simple, fair for homogeneous short requests, and the right default for most stateless HTTP pools.
+</p>
+<p>
+<strong>Least connections</strong> (<code>least_conn</code>) sends each request to the server with the fewest active connections (respecting weights). It shines for long-lived or variable-duration work — WebSockets, streaming, uneven RPC costs — where round-robin can pile up on a slow node.
+</p>
+<p>
+Envoy's <a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/load_balancers">weighted least request</a> policy goes further: when weights are equal it uses <em>power of two choices</em> (P2C) — sample two random healthy hosts and pick the one with fewer active requests — which resists herding and stays O(1).
+</p>
+<p>
+<strong>IP hash / source affinity</strong> (<code>ip_hash</code> in NGINX) maps client IP to a backend so the same client usually lands on the same server without cookies. It is a blunt stickiness tool and can skew when many clients share NATs.
+</p>
+<p>
+<strong>Consistent hashing</strong> (NGINX <code>hash … consistent</code> / ketama; Envoy ring hash and Maglev) hashes a key — URI, cookie, header, user id — onto a ring or lookup table so only a small fraction of keys remaps when a backend is added or removed. Critical for cache pools and stateful shards. Google's Maglev paper and Envoy's Maglev policy use a fixed-size table (65537 in Envoy) for fast lookup with good balance; ring/ketama is often slightly more stable under membership churn.
+</p>
+
+<div class="diagram-container">
+<h4>How Algorithms Place the Next Request</h4>
+<svg viewBox="0 0 760 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="120" y="28" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="700">ROUND ROBIN</text>
+  <circle cx="60" cy="90" r="22" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="60" y="94" text-anchor="middle" fill="#e1e4ed" font-size="12">A</text>
+  <circle cx="120" cy="90" r="22" fill="#6c8cff33" stroke="#6c8cff" stroke-width="2.5"/>
+  <text x="120" y="94" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="700">B</text>
+  <circle cx="180" cy="90" r="22" fill="#232733" stroke="#2e3345" stroke-width="2"/>
+  <text x="180" y="94" text-anchor="middle" fill="#8b90a0" font-size="12">C</text>
+  <text x="120" y="140" text-anchor="middle" fill="#8b90a0" font-size="11">next → B, then C, then A…</text>
+  <text x="380" y="28" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="700">LEAST CONNECTIONS</text>
+  <circle cx="320" cy="90" r="22" fill="#232733" stroke="#2e3345" stroke-width="2"/>
+  <text x="320" y="88" text-anchor="middle" fill="#e1e4ed" font-size="12">A</text>
+  <text x="320" y="102" text-anchor="middle" fill="#8b90a0" font-size="9">conn: 7</text>
+  <circle cx="380" cy="90" r="22" fill="#4ecdc433" stroke="#4ecdc4" stroke-width="2.5"/>
+  <text x="380" y="88" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="700">B</text>
+  <text x="380" y="102" text-anchor="middle" fill="#4ecdc4" font-size="9">conn: 2</text>
+  <circle cx="440" cy="90" r="22" fill="#232733" stroke="#2e3345" stroke-width="2"/>
+  <text x="440" y="88" text-anchor="middle" fill="#e1e4ed" font-size="12">C</text>
+  <text x="440" y="102" text-anchor="middle" fill="#8b90a0" font-size="9">conn: 5</text>
+  <text x="380" y="140" text-anchor="middle" fill="#8b90a0" font-size="11">pick lowest active load</text>
+  <text x="620" y="28" text-anchor="middle" fill="#ffd93d" font-size="12" font-weight="700">CONSISTENT HASH</text>
+  <circle cx="620" cy="100" r="55" fill="none" stroke="#2e3345" stroke-width="2"/>
+  <circle cx="620" cy="45" r="8" fill="#ffd93d"/>
+  <text x="640" y="40" fill="#ffd93d" font-size="10">A</text>
+  <circle cx="675" cy="100" r="8" fill="#4ecdc4"/>
+  <text x="688" y="104" fill="#4ecdc4" font-size="10">B</text>
+  <circle cx="620" cy="155" r="8" fill="#ff6b9d"/>
+  <text x="640" y="168" fill="#ff6b9d" font-size="10">C</text>
+  <circle cx="565" cy="100" r="8" fill="#6c8cff"/>
+  <text x="530" y="104" fill="#6c8cff" font-size="10">A′</text>
+  <polygon points="620,100 628,78 612,78" fill="#e1e4ed"/>
+  <text x="620" y="195" text-anchor="middle" fill="#8b90a0" font-size="11">hash(key) → nearest clockwise</text>
+  <rect x="40" y="220" width="680" height="44" rx="8" fill="#141620" stroke="#2e3345"/>
+  <text x="380" y="247" text-anchor="middle" fill="#8b90a0" font-size="12">Weighted variants multiply selection frequency by capacity. Envoy P2C ≈ least-request without an O(N) scan.</text>
+</svg>
+</div>
+
+<h3>Health Checks: Active and Passive</h3>
+<p>
+Without health checks, every algorithm will cheerfully send traffic to a crashed process. <strong>Passive</strong> checks watch real traffic — NGINX's <code>max_fails</code> / <code>fail_timeout</code> mark a peer unavailable after repeated errors. <strong>Active</strong> checks periodically probe a dedicated endpoint (e.g. <code>/healthz</code>). Managed balancers (ALB/NLB) and Envoy active health checking remove unhealthy targets from the selection set until they recover. Prefer both: active for fast detection of silent failures, passive for catching request-path errors active probes miss.
+</p>
+
+<h3>Sticky Sessions (Session Affinity)</h3>
+<p>
+Affinity keeps a client's requests on the same backend for the life of a session — needed when servers hold in-memory state. Mechanisms include cookie stickiness (NGINX Plus <code>sticky cookie</code>, ALB stickiness), application-learned cookies, and IP hash. Stickiness fights even distribution and complicates failover when a node dies, so prefer externalizing session state (Redis, DynamoDB) and keeping the LB mostly affinity-free.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">Prefer for most APIs</h4>
+    <ul>
+      <li>L7 balancer (ALB / NGINX / Envoy)</li>
+      <li>Round-robin or least-request</li>
+      <li>Active + passive health checks</li>
+      <li>Stateless apps; shared session store</li>
+      <li>Weighted targets for canaries</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Prefer when constraints bite</h4>
+    <ul>
+      <li>L4 (NLB / Maglev) for raw TCP/UDP latency</li>
+      <li>Least connections for long-lived streams</li>
+      <li>Consistent hash for caches / shards</li>
+      <li>Sticky sessions only if state is local</li>
+      <li>IP hash as a last-resort affinity hack</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">AWS ALB + NLB</div>
+    <div class="desc">ALB routes HTTP by host/path with round robin or least outstanding requests; NLB preserves source IP and uses flow hash for ultra-low-latency TCP/UDP.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">NGINX Upstream</div>
+    <div class="desc">Default weighted round-robin, plus least_conn, ip_hash, and ketama-compatible consistent hash — the workhorse reverse proxy for web fleets.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Envoy / Istio</div>
+    <div class="desc">Sidecar and gateway LB with round robin, least request (P2C), ring hash, Maglev, and locality-aware policies for service meshes.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Google Maglev</div>
+    <div class="desc">Software L4 LB serving Google and GCP since 2008: ECMP to Maglev machines, consistent hash tables, and connection tracking for resilient flows.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Cache / CDN edges</div>
+    <div class="desc">Consistent hashing keeps a content key on the same cache node across membership changes, protecting hit rates when the pool scales.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Canary &amp; blue-green</div>
+    <div class="desc">Weighted target groups (ALB) or weighted upstream peers (NGINX/Envoy) shift a small percent of traffic to a new version before full cutover.</div>
+  </div>
+</div>
+
+<h2>Trade-offs to Keep in Mind</h2>
+<p>
+Algorithm beauty cannot fix bad capacity planning. Round-robin on heterogeneous machines needs weights. Least connections without max connection limits can still overwhelm a recovering node — combine with slow-start and connection caps where available. Consistent hashing is not free under churn: Maglev remaps more keys than ketama when hosts change, though it is often faster. And sticky sessions are a smell that state should probably live outside the app process.
+</p>
+<p>
+Pick L7 unless you have a clear L4 requirement. Start with round-robin (or least-request for variable RPCs), turn on health checks on day one, and reach for consistent hashing only when cache locality or shard affinity demands it.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://nginx.org/en/docs/http/ngx_http_upstream_module.html">Module ngx_http_upstream_module — NGINX documentation (round-robin, least_conn, hash, ip_hash, sticky)</a></li>
+<li><a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/load_balancers">Supported load balancers — Envoy documentation (WRR, least request/P2C, ring hash, Maglev)</a></li>
+<li><a href="https://research.google/pubs/maglev-a-fast-and-reliable-software-network-load-balancer/">Maglev: A Fast and Reliable Software Network Load Balancer — Google / USENIX NSDI 2016</a></li>
+<li><a href="https://www.usenix.org/sites/default/files/nsdi16-paper-eisenbud.pdf">Maglev paper PDF — USENIX</a></li>
+<li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/application/introduction.html">What is an Application Load Balancer? — AWS ELB documentation</a></li>
+<li><a href="https://docs.aws.amazon.com/elasticloadbalancing/latest/network/introduction.html">What is a Network Load Balancer? — AWS ELB documentation</a></li>
+<li><a href="https://codelit.io/blog/load-balancer-types-and-algorithms-explained">Load Balancer Types &amp; Algorithms: L4 vs L7 — Codelit</a></li>
+<li><a href="https://techoral.com/systemdesign/load-balancing-algorithms.html">Load Balancing Algorithms — System Design Guide — Techoral</a></li>
+</ol>
+</div>
+
+</body>
+</html>

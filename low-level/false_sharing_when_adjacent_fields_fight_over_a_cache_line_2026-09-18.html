@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>False Sharing: When Adjacent Fields Fight Over a Cache Line</title>
+<meta name="description" content="How false sharing makes independent fields thrash a 64-byte cache line, how to detect it with perf c2c and Intel tools, and how padding, alignment, and per-CPU data fix it.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">Low-Level System Design</div>
+<h1>False Sharing: When Adjacent Fields Fight Over a Cache Line</h1>
+<p class="subtitle">Independent variables, one 64-byte line — and why your counters still bounce between cores.</p>
+<p class="meta">September 18, 2026 &middot; 5 min read</p>
+
+<h2>The Concept</h2>
+<p><strong>False sharing</strong> is what happens when two or more threads modify <em>different</em> memory locations that happen to sit on the same cache line. The hardware coherence protocol — typically MESI or a close relative — cannot tell that the bytes are unrelated. It only sees a write to a shared line: the writer's copy becomes Modified, every other core's copy is invalidated, and the next reader or writer pays for a cache-to-cache transfer. The logical data never overlapped; the line did.</p>
+<p>On contemporary x86 and most Arm servers the coherence granule is <strong>64 bytes</strong>. Pack a hot per-thread counter next to another thread's hot counter inside that window and you get the classic ping-pong: throughput collapses as core count rises, even though each thread only touches its own field. The academic framing goes back at least to Bolosky and Scott's shared-memory study; the Linux kernel's own false-sharing guide treats it as a first-class performance hazard on large SMP systems.</p>
+
+<div class="callout">
+<strong>True vs false sharing:</strong> True sharing is when cores really do contend on the same logical datum (a lock word, a shared queue head). False sharing is when the conflict is an accident of layout — adjacent fields, packed globals, or misaligned array bases — and the fix is padding, alignment, or sharding, not a different algorithm.
+</div>
+
+<h2>Deeper Dive: Lines, HITM, and Why Layout Is Destiny</h2>
+
+<h3>Coherence is line-grained, not field-grained</h3>
+<p>Caches move and invalidate data in whole lines. When Core A writes offset 0 of a line while Core B keeps reading offset 32 of the same line, Core B's copy is still invalidated on every store — even though Core B never needed Core A's bytes. Two conditions make the damage severe, as the kernel documentation summarizes: the datum is touched by many CPUs, and at least one of those accesses is a write (write/write or write/read).</p>
+<p>Intel's scaling guidance puts the same idea in hardware terms: x86 server memory is organized as 64-byte lines with MESIF-style states; frequent multi-core modification of one line causes cache-line contention ("ping-pong"). Contended_Accesses, Data_Sharing, and False_Sharing show up in Top-down Microarchitecture Analysis (TMA) metrics when PEBS is available.</p>
+
+<div class="diagram-container">
+<h4>Diagram 1 — False Sharing on a Single 64-Byte Line</h4>
+<svg viewBox="0 0 680 280" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arrY" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#ffd93d"/>
+    </marker>
+  </defs>
+  <text x="340" y="22" text-anchor="middle" fill="#8b90a0" font-size="12">One cache line (64 bytes) — two independent counters</text>
+
+  <rect x="40" y="40" width="600" height="56" rx="6" fill="#141620" stroke="#2e3345"/>
+  <rect x="40" y="40" width="90" height="56" fill="#ff6b9d33" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="85" y="68" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">count_A</text>
+  <text x="85" y="84" text-anchor="middle" fill="#8b90a0" font-size="10">offset 0</text>
+  <rect x="160" y="40" width="90" height="56" fill="#4ecdc433" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="205" y="68" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">count_B</text>
+  <text x="205" y="84" text-anchor="middle" fill="#8b90a0" font-size="10">offset 8</text>
+  <text x="420" y="72" text-anchor="middle" fill="#8b90a0" font-size="11">… padding / other cold fields …</text>
+  <text x="640" y="72" text-anchor="end" fill="#8b90a0" font-size="10">+64</text>
+
+  <rect x="60" y="140" width="130" height="70" rx="10" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="125" y="168" text-anchor="middle" fill="#e1e4ed" font-size="13" font-weight="600">Core A</text>
+  <text x="125" y="188" text-anchor="middle" fill="#ff6b9d" font-size="11">writes count_A</text>
+  <text x="125" y="200" text-anchor="middle" fill="#8b90a0" font-size="10">line → Modified</text>
+
+  <rect x="490" y="140" width="130" height="70" rx="10" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="555" y="168" text-anchor="middle" fill="#e1e4ed" font-size="13" font-weight="600">Core B</text>
+  <text x="555" y="188" text-anchor="middle" fill="#4ecdc4" font-size="11">writes count_B</text>
+  <text x="555" y="200" text-anchor="middle" fill="#8b90a0" font-size="10">line → Invalid → fetch</text>
+
+  <path d="M190,175 C 280,150 400,150 490,175" fill="none" stroke="#ffd93d" stroke-width="2" marker-end="url(#arrY)"/>
+  <path d="M490,195 C 400,220 280,220 190,195" fill="none" stroke="#ffd93d" stroke-width="2" marker-end="url(#arrY)"/>
+  <text x="340" y="250" text-anchor="middle" fill="#ffd93d" font-size="12">HITM bounce: line ownership flips on every store, though fields never overlap</text>
+</svg>
+</div>
+
+<h3>Canonical layout traps</h3>
+<p>The kernel false-sharing guide lists patterns that keep biting production code:</p>
+<ul style="margin:0 0 16px 20px;color:var(--text-dim);font-size:0.95em;">
+<li style="margin-bottom:8px;">A lock and the data it protects packed on one line — fine on dual-core boxes, lethal when hundreds of CPUs spin.</li>
+<li style="margin-bottom:8px;">Small globals (flags, counters, atomics) glued together by the linker into one hot line.</li>
+<li style="margin-bottom:8px;">Large structs (for example <code>mem_cgroup</code>) where unrelated hot members land on the same line by accident.</li>
+<li style="margin-bottom:8px;">Array or allocator bases that are not 64-byte aligned, so even "one object per line" still straddles a boundary.</li>
+</ul>
+<p>A real kernel regression came from <code>mmap_lock</code> layout inside <code>mm_struct</code>; Linus Torvalds walked the cache-line fallout on LKML. Networking and MM have since landed many dedicated padding and re-layout patches (for example cache-aligning <code>tcp_memory_allocated</code>, or re-laying out <code>page_counter</code>).</p>
+
+<div class="diagram-container">
+<h4>Diagram 2 — Broken Layout vs Padded Fix</h4>
+<svg viewBox="0 0 680 320" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="170" y="24" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">BEFORE — false sharing</text>
+  <text x="510" y="24" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">AFTER — one hot field per line</text>
+
+  <rect x="20" y="40" width="300" height="50" rx="4" fill="#141620" stroke="#ff6b9d"/>
+  <rect x="20" y="40" width="70" height="50" fill="#ff6b9d44" stroke="#ff6b9d"/>
+  <text x="55" y="70" text-anchor="middle" fill="#ff6b9d" font-size="11">A</text>
+  <rect x="90" y="40" width="70" height="50" fill="#4ecdc444" stroke="#4ecdc4"/>
+  <text x="125" y="70" text-anchor="middle" fill="#4ecdc4" font-size="11">B</text>
+  <text x="220" y="70" text-anchor="middle" fill="#8b90a0" font-size="10">same 64 B line</text>
+
+  <text x="170" y="115" text-anchor="middle" fill="#8b90a0" font-size="11">Thread 0 ↑A · Thread 1 ↑B → HITM storm</text>
+
+  <rect x="380" y="40" width="280" height="50" rx="4" fill="#141620" stroke="#4ecdc4"/>
+  <rect x="380" y="40" width="80" height="50" fill="#ff6b9d44" stroke="#ff6b9d"/>
+  <text x="420" y="70" text-anchor="middle" fill="#ff6b9d" font-size="11">A + pad</text>
+  <text x="560" y="70" text-anchor="middle" fill="#8b90a0" font-size="10">rest of line</text>
+
+  <rect x="380" y="110" width="280" height="50" rx="4" fill="#141620" stroke="#4ecdc4"/>
+  <rect x="380" y="110" width="80" height="50" fill="#4ecdc444" stroke="#4ecdc4"/>
+  <text x="420" y="140" text-anchor="middle" fill="#4ecdc4" font-size="11">B + pad</text>
+  <text x="560" y="140" text-anchor="middle" fill="#8b90a0" font-size="10">rest of line</text>
+
+  <text x="520" y="185" text-anchor="middle" fill="#8b90a0" font-size="11">Each writer owns its line — no cross-core invalidations</text>
+
+  <rect x="20" y="210" width="640" height="90" rx="8" fill="#232733" stroke="#2e3345"/>
+  <text x="40" y="240" fill="#6c8cff" font-size="12" font-weight="600">Typical fixes</text>
+  <text x="40" y="262" fill="#e1e4ed" font-size="12">• alignas(64) / ____cacheline_aligned · std::hardware_destructive_interference_size</text>
+  <text x="40" y="282" fill="#e1e4ed" font-size="12">• per-CPU / per-thread shards · read-before-write · group read-mostly fields together</text>
+</svg>
+</div>
+
+<h3>Detecting it: perf c2c, pahole, and Intel tooling</h3>
+<p><code>perf c2c</code> (Cache-To-Cache) is the workhorse on Linux. It samples load-latency and precise-store events (Intel PEBS), IBS on many AMD CPUs (not Zen 3), or Arm SPE, then ranks cache lines by HITM — a load that hit a Modified line in another cache. The man page workflow is record then report; the kernel docs recommend something like:</p>
+<p><code>perf c2c record -ag sleep 3</code><br>
+<code>perf c2c report --call-graph none -k vmlinux</code></p>
+<p>Look for high Local/Remote HITM, long average load latency, many CPUs touching one line, and — the smoking gun for false sharing — <strong>different offsets</strong> inside that line from different threads. Match those offsets to struct members with <code>pahole</code> (cache-line-delimited layouts) or <code>addr2line</code> for inlined call sites. Red Hat's performance guide walks the same Shared Data Cache Line Table: sort by remote HITM, then inspect the Pareto of offsets.</p>
+<p>Joe Mario's original c2c write-up (the Red Hat prototype that landed in perf) is still the clearest tour of the report columns. On Intel platforms you can also start from VTune Memory Access / Contested Accesses, or aggregate L2 HitM / snoop-related counters via <a href="https://github.com/intel/pcm">Intel Performance Counter Monitor (PCM)</a>, then drill into addresses with PEBS Data Linear Address (DLA) profiling as described in Intel's SDM Vol. 3B and practical guides such as Easyperf.</p>
+
+<div class="callout">
+<strong>Caveat:</strong> On some Ice Lake / Tiger Lake generations, PEBS can conflate modified-line HITM with clean cross-core forwards, producing false positives in c2c. Always corroborate with source offsets and a before/after microbenchmark — do not pad blindly from a single HITM percentage.
+</div>
+
+<h3>Fixes that stick</h3>
+<div class="comparison">
+<div class="comparison-card">
+<h4 style="color:var(--accent3)">Layout &amp; padding</h4>
+<ul>
+<li>Put each hot write field alone on a line (<code>____cacheline_aligned</code>, <code>alignas(64)</code>)</li>
+<li>Use C++17 <code>std::hardware_destructive_interference_size</code> instead of hard-coding 64</li>
+<li>Pad to 128 bytes where adjacent-line prefetch doubles the effective granule</li>
+<li>Ensure array / allocator bases are line-aligned so elements do not straddle</li>
+</ul>
+</div>
+<div class="comparison-card">
+<h4 style="color:var(--accent2)">Access &amp; ownership</h4>
+<ul>
+<li>Shard into per-CPU or per-thread data; sync to a global less often</li>
+<li>Prefer compare-then-write over unconditional stores to shared flags</li>
+<li>Group read-mostly fields together; keep write-hot fields apart</li>
+<li>Accept some false sharing on cold paths — padding costs cache and TLB</li>
+</ul>
+</div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+<div class="use-case">
+<div class="label">Kernel networking &amp; MM</div>
+<div class="desc">Linux patches regularly cache-align hot atomics (TCP memory/socket counters) and re-layout structures like page_counter after perf-c2c finds shared-line HITMs under will-it-scale and similar workloads.</div>
+</div>
+<div class="use-case">
+<div class="label">Per-thread metrics &amp; stats</div>
+<div class="desc">Application counters, histograms, and rate limiters often start as a packed array of atomics — a textbook false-sharing bomb until each slot is line-padded or made thread-local.</div>
+</div>
+<div class="use-case">
+<div class="label">Lock-free queues &amp; rings</div>
+<div class="desc">Producer and consumer indexes on one line thrash under load; separating them (and often the cached copies each side keeps) is standard ring-buffer hygiene.</div>
+</div>
+<div class="use-case">
+<div class="label">Database &amp; language runtimes</div>
+<div class="desc">JVMs, Go runtimes, and DB engines spend serious effort on cache-line-padded structs for allocators and schedulers; Intel TMA Contested Accesses / False_Sharing metrics catch regressions in CI.</div>
+</div>
+</div>
+
+<div class="callout">
+<strong>Complement to MESI:</strong> MESI explains <em>why</em> a write invalidates peer copies. False sharing is the software layout failure mode that weaponizes that mechanism against innocent fields. Fix the layout; do not try to outsmart the coherence protocol.
+</div>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://docs.kernel.org/kernel-hacking/false-sharing.html" target="_blank">False Sharing — The Linux Kernel documentation</a></li>
+<li><a href="https://man7.org/linux/man-pages/man1/perf-c2c.1.html" target="_blank">perf-c2c(1) — Linux manual page (Shared Data C2C/HITM Analyzer)</a></li>
+<li><a href="https://joemario.github.io/blog/2016/09/01/c2c-blog/" target="_blank">Mario, J. — "C2C - False Sharing Detection in Linux Perf" (2016)</a></li>
+<li><a href="https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/monitoring_and_managing_system_status_and_performance/detecting-false-sharing" target="_blank">Red Hat Enterprise Linux 10 — Detecting false sharing with perf c2c</a></li>
+<li><a href="https://intel.github.io/optimization-zone/hardware/scaling/" target="_blank">Intel Optimization Zone — Basic software scaling principles (cache lines, HITM, padding)</a></li>
+<li><a href="https://www.microsoft.com/en-us/research/publication/false-sharing-and-its-effect-on-shared-memory-performance/" target="_blank">Bolosky, W. J. &amp; Scott, M. L. — "False Sharing and Its Effect on Shared Memory Performance" (USENIX SEDMS IV, 1993)</a></li>
+<li><a href="https://en.cppreference.com/w/cpp/thread/hardware_destructive_interference_size" target="_blank">std::hardware_destructive_interference_size — cppreference (C++17)</a></li>
+<li><a href="https://lore.kernel.org/lkml/CAHk-=whoqV=cX5VC80mmR9rr+Z+yQ6fiQZm36Fb-izsanHg23w@mail.gmail.com/" target="_blank">Torvalds, L. — mmap_lock / mm_struct cache-line analysis (LKML)</a></li>
+<li><a href="https://github.com/intel/pcm" target="_blank">Intel Performance Counter Monitor (PCM) — GitHub</a></li>
+<li><a href="https://easyperf.net/blog/2019/12/17/Detecting-false-sharing-using-perf" target="_blank">Easyperf — Detect false sharing with Data Address Profiling / perf c2c</a></li>
+<li><a href="https://en.wikipedia.org/wiki/False_sharing" target="_blank">False sharing — Wikipedia</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/include/linux/cache.h" target="_blank">Linux include/linux/cache.h — ____cacheline_aligned / SMP_CACHE_BYTES</a></li>
+</ol>
+</div>
+
+</body>
+</html>

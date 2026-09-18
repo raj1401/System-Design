@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CDN Architecture: Edge Caching, Origin Shield &amp; Request Routing</title>
+<meta name="description" content="How CDNs route users to edge PoPs via anycast or DNS, serve from tiered caches with origin shields, and use HTTP caching semantics, request collapsing, and purge strategies to cut latency and protect origins.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>CDN Architecture: Edge Caching, Origin Shield &amp; Request Routing</h1>
+<p class="subtitle">Moving bytes closer to users — and keeping origin servers from melting under global demand</p>
+<p class="meta">September 18, 2026 &middot; 5 min read</p>
+
+<h2>The Concept, Briefly</h2>
+<p>
+A <strong>Content Delivery Network (CDN)</strong> is a geographically distributed reverse-proxy cache that sits between clients and your origin. Users are steered to a nearby <em>Point of Presence (PoP)</em>; the edge serves cache hits in single-digit to tens of milliseconds, and only misses travel onward through mid-tier caches or an <em>origin shield</em> before reaching the authoritative source.
+</p>
+<p>
+Architecturally, a CDN splits into a <strong>data plane</strong> (edge selection, TLS termination, cache lookup, origin fetch, response delivery) and a <strong>control plane</strong> (config distribution, routing policy, certificate management, purge fan-out, monitoring). The design trades three tensions: freshness vs. latency (TTL), granularity vs. hit ratio (cache keys), and origin protection vs. operational complexity (tiered caches and shields).
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> A well-tuned CDN routinely absorbs 90–99% of cacheable traffic at the edge, collapses stampedes via request coalescing, and survives origin outages with <code>stale-if-error</code>. Without shields and careful cache-key design, a viral asset or global purge can turn every PoP into a synchronized DDoS against your origin.
+</div>
+
+<h2>Underlying Ideas &amp; Mechanisms</h2>
+
+<h3>Request Routing: Anycast vs DNS GSLB</h3>
+<p>
+Before a byte is cached, the client must land on a PoP. Two dominant mechanisms exist.
+</p>
+<p>
+<strong>Anycast</strong> announces the same IP prefix from many PoPs via BGP. Routers deliver packets to the topologically nearest announcement. Failover is BGP convergence (often seconds), independent of DNS TTLs. Cloudflare’s HTTP network is anycast end-to-end; when a PoP fails, the route is withdrawn and traffic shifts without waiting for resolvers to expire records.
+</p>
+<p>
+<strong>DNS-based GSLB</strong> (used historically by Akamai and CloudFront) returns different A/AAAA records based on the recursive resolver’s location (or EDNS Client Subnet). It allows fine-grained geo-steering and compliance routing, but failover is gated by DNS TTLs (typically 30–60s), and resolver location is not always the user’s location (corporate NATs, public resolvers).
+</p>
+<p>
+Inside a PoP, a Layer-4 load balancer must pin each TCP/QUIC flow to one cache server. Google’s <a href="https://www.usenix.org/conference/nsdi16/technical-sessions/presentation/eisenbud">Maglev</a> (NSDI ’16) computes a consistent-hash lookup table from the backend set and selects by 5-tuple hash — no shared connection state across LB machines, and removing one of <em>N</em> backends remaps roughly <code>1/N</code> of flows.
+</p>
+
+<div class="diagram-container">
+<h4>CDN Request Path: Edge → Shield → Origin</h4>
+<svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="20" y="140" width="90" height="50" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="65" y="170" text-anchor="middle" fill="#e1e4ed" font-size="13" font-weight="600">Clients</text>
+  <line x1="110" y1="165" x2="170" y2="165" stroke="#8b90a0" stroke-width="1.5"/>
+  <text x="140" y="152" text-anchor="middle" fill="#8b90a0" font-size="10">anycast / DNS</text>
+  <rect x="170" y="40" width="150" height="250" rx="12" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="245" y="68" text-anchor="middle" fill="#4ecdc4" font-size="13" font-weight="700">Edge PoPs (L1)</text>
+  <rect x="190" y="90" width="110" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="245" y="112" text-anchor="middle" fill="#e1e4ed" font-size="12">PoP · Tokyo</text>
+  <rect x="190" y="140" width="110" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="245" y="162" text-anchor="middle" fill="#e1e4ed" font-size="12">PoP · NYC</text>
+  <rect x="190" y="190" width="110" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="245" y="212" text-anchor="middle" fill="#e1e4ed" font-size="12">PoP · Frankfurt</text>
+  <text x="245" y="260" text-anchor="middle" fill="#8b90a0" font-size="11">TLS · cache · WAF</text>
+  <line x1="320" y1="165" x2="380" y2="165" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="350" y="152" text-anchor="middle" fill="#ff6b9d" font-size="10">miss</text>
+  <rect x="380" y="110" width="140" height="110" rx="12" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="450" y="145" text-anchor="middle" fill="#ff6b9d" font-size="13" font-weight="700">Origin Shield</text>
+  <text x="450" y="165" text-anchor="middle" fill="#8b90a0" font-size="11">mid-tier / L2</text>
+  <text x="450" y="185" text-anchor="middle" fill="#8b90a0" font-size="11">request collapse</text>
+  <text x="450" y="205" text-anchor="middle" fill="#8b90a0" font-size="11">coalesce misses</text>
+  <line x1="520" y1="165" x2="580" y2="165" stroke="#ffd93d" stroke-width="1.5"/>
+  <text x="550" y="152" text-anchor="middle" fill="#ffd93d" font-size="10">1 fetch</text>
+  <rect x="580" y="125" width="150" height="80" rx="12" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="655" y="160" text-anchor="middle" fill="#ffd93d" font-size="13" font-weight="700">Origin</text>
+  <text x="655" y="180" text-anchor="middle" fill="#8b90a0" font-size="11">S3 · API · CMS</text>
+  <text x="380" y="320" text-anchor="middle" fill="#8b90a0" font-size="12">Hits return at the edge; misses escalate through a shield so many PoPs become one origin request.</text>
+</svg>
+</div>
+
+<h3>HTTP Caching Semantics (RFC 9111)</h3>
+<p>
+CDN edge caches are <em>shared caches</em> in the sense of <a href="https://www.rfc-editor.org/rfc/rfc9111.html">RFC 9111</a>. Freshness lifetime is computed in priority order: <code>s-maxage</code> (shared-cache override) → <code>max-age</code> → <code>Expires</code> → heuristic (often ~10% of <code>Last-Modified</code> age). A typical layered directive:
+</p>
+<p>
+<code>Cache-Control: max-age=60, s-maxage=3600, stale-while-revalidate=86400</code>
+</p>
+<p>
+Browsers revalidate often; the CDN holds the object for an hour; <a href="https://www.rfc-editor.org/rfc/rfc5861.html">RFC 5861</a> extensions (<code>stale-while-revalidate</code>, <code>stale-if-error</code>) let the edge serve slightly stale content while refreshing or when origin returns 5xx — Informational extensions that caches may ignore, but every major CDN implements them.
+</p>
+<p>
+The <strong>cache key</strong> defaults to method + host + path + query. Over-varying (e.g. <code>Vary: User-Agent</code>) fragments the cache into near-zero hit ratio. Best practice: normalize tracking query params out of the key, vary only on meaningful dimensions (<code>Accept-Encoding</code>), and strip signed-URL signature parameters so many users share one cached object.
+</p>
+
+<h3>Origin Shielding, Tiered Cache &amp; Request Collapsing</h3>
+<p>
+Without a mid-tier, each edge PoP independently fetches the origin on miss. A viral asset across 100 PoPs means 100 concurrent origin pulls. An <strong>origin shield</strong> (or regional/upper-tier cache) consolidates those misses: edges fetch the shield; the shield collapses concurrent identical misses into a single origin request.
+</p>
+<p>
+Cloudflare’s Smart Shield / Tiered Cache organizes data centers into lower-tier (user-facing) and upper-tier groups so only upper tiers contact origin; <a href="https://developers.cloudflare.com/cache/advanced-configuration/cache-reserve/">Cache Reserve</a> adds persistent R2-backed storage as an ultimate upper tier for long-tail assets that would otherwise churn out of RAM. Request collapsing (also called coalescing) is the stampede brake: many waiters, one fetch.
+</p>
+
+<div class="diagram-container">
+<h4>Anycast Landing + Maglev Inside the PoP</h4>
+<svg viewBox="0 0 760 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="120" y="30" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="700">BGP ANYCAST</text>
+  <circle cx="60" cy="100" r="18" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="60" y="104" text-anchor="middle" fill="#e1e4ed" font-size="10">User</text>
+  <rect x="120" y="70" width="100" height="60" rx="8" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="170" y="95" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="700">Same VIP</text>
+  <text x="170" y="112" text-anchor="middle" fill="#8b90a0" font-size="10">many PoPs</text>
+  <line x1="78" y1="100" x2="120" y2="100" stroke="#8b90a0" stroke-width="1.5"/>
+  <text x="170" y="160" text-anchor="middle" fill="#8b90a0" font-size="11">nearest PoP wins</text>
+  <text x="480" y="30" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="700">INSIDE PoP · MAGLEV</text>
+  <rect x="300" y="60" width="90" height="50" rx="8" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="345" y="90" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="700">L4 LB</text>
+  <line x1="390" y1="85" x2="440" y2="70" stroke="#ffd93d" stroke-width="1.5"/>
+  <line x1="390" y1="85" x2="440" y2="100" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="390" y1="85" x2="440" y2="130" stroke="#6c8cff" stroke-width="1.5"/>
+  <rect x="440" y="50" width="90" height="32" rx="6" fill="#232733" stroke="#ffd93d" stroke-width="1.5"/>
+  <text x="485" y="70" text-anchor="middle" fill="#e1e4ed" font-size="11">Cache A</text>
+  <rect x="440" y="90" width="90" height="32" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="485" y="110" text-anchor="middle" fill="#e1e4ed" font-size="11">Cache B</text>
+  <rect x="440" y="130" width="90" height="32" rx="6" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="485" y="150" text-anchor="middle" fill="#e1e4ed" font-size="11">Cache C</text>
+  <text x="485" y="185" text-anchor="middle" fill="#8b90a0" font-size="11">5-tuple → Maglev table</text>
+  <rect x="580" y="60" width="150" height="100" rx="10" fill="#141620" stroke="#2e3345"/>
+  <text x="655" y="90" text-anchor="middle" fill="#e1e4ed" font-size="12" font-weight="600">On miss</text>
+  <text x="655" y="110" text-anchor="middle" fill="#8b90a0" font-size="11">→ shield / upper tier</text>
+  <text x="655" y="130" text-anchor="middle" fill="#8b90a0" font-size="11">→ collapse → origin</text>
+  <rect x="40" y="220" width="680" height="44" rx="8" fill="#141620" stroke="#2e3345"/>
+  <text x="380" y="247" text-anchor="middle" fill="#8b90a0" font-size="12">Anycast picks the PoP; Maglev keeps the flow sticky without shared LB state.</text>
+</svg>
+</div>
+
+<h3>Invalidation: Versioned URLs, Soft Purge, Surrogate Keys</h3>
+<p>
+Hard purge deletes immediately and can create a thundering herd. Soft purge marks stale and revalidates on the next request — safer for routine updates. Fingerprinted static assets (<code>main.a1b2c3d4.js</code>) make invalidation a non-problem: new content is a new URL with year-long TTLs.
+</p>
+<p>
+For CMS and commerce sites, <strong>surrogate keys</strong> (Fastly <code>Surrogate-Key</code>, Cloudflare Cache-Tag) tag objects by product/category so one purge call invalidates a logical group. These headers descend from the W3C Edge Architecture Note (2001), not an IETF RFC — treat them as a vendor-stable edge contract.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">Prefer for static &amp; media</h4>
+    <ul>
+      <li>Versioned / content-addressable URLs</li>
+      <li>Long <code>s-maxage</code> (days–year)</li>
+      <li>Pre-compressed Brotli at build time</li>
+      <li>Origin shield for launch stampedes</li>
+      <li>Manifest TTL ≪ segment TTL for HLS/DASH</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Prefer for HTML &amp; APIs</h4>
+    <ul>
+      <li>Short <code>s-maxage</code> + <code>stale-while-revalidate</code></li>
+      <li>Soft purge over hard purge</li>
+      <li>Surrogate keys / cache tags for groups</li>
+      <li>Normalize cache keys aggressively</li>
+      <li><code>stale-if-error</code> for origin outages</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Netflix Open Connect</div>
+    <div class="desc">ISP-embedded appliances pre-position content-addressable video encodes; control plane in cloud, data plane inside ISP networks — push model with near-infinite TTLs.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Cloudflare Anycast + Tiered Cache</div>
+    <div class="desc">Hundreds of cities announce the same VIP; Smart Tiered Cache and Cache Reserve collapse misses and keep long-tail objects off origin.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Amazon CloudFront</div>
+    <div class="desc">DNS/GSLB edge selection with Regional Edge Caches and optional Origin Shield so regional misses converge before hitting S3 or custom origins.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Fastly Soft Purge</div>
+    <div class="desc">Powderhorn gossip fan-out marks objects stale fleet-wide in ~150 ms median; soft purge avoids origin stampedes on routine CMS updates.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">E-commerce product pages</div>
+    <div class="desc">Surrogate keys tag product, category, and campaign; a price change purges every page showing that SKU without enumerating URLs.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Signed media URLs</div>
+    <div class="desc">Origin signs short-lived policies; edge verifies before cache lookup — strip signature params from the cache key so hits stay shared.</div>
+  </div>
+</div>
+
+<h2>Trade-offs to Keep in Mind</h2>
+<p>
+Long TTLs raise hit ratio but widen staleness; short TTLs keep content fresh but reintroduce origin load. Over-specific cache keys destroy CHR; under-specific keys risk serving the wrong personalized response. Shields protect origin but add a hop and a failure domain — plan multi-shield or regional upper tiers. Anycast failover is fast, but BGP flaps can reset long-lived TCP/QUIC sessions; sticky media may still want careful PoP affinity.
+</p>
+<p>
+Start with anycast or managed DNS routing, normalize cache keys, layer <code>s-maxage</code> with <code>stale-while-revalidate</code>, enable request collapsing and an origin shield before your first viral launch, and use versioned URLs for everything that can be fingerprinted.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://www.rfc-editor.org/rfc/rfc9111.html">RFC 9111: HTTP Caching — IETF (shared vs private caches, s-maxage, freshness, validation)</a></li>
+<li><a href="https://www.rfc-editor.org/rfc/rfc5861.html">RFC 5861: HTTP Cache-Control Extensions for Stale Content — stale-while-revalidate, stale-if-error</a></li>
+<li><a href="https://www.usenix.org/conference/nsdi16/technical-sessions/presentation/eisenbud">Maglev: A Fast and Reliable Software Network Load Balancer — Eisenbud et al., USENIX NSDI 2016</a></li>
+<li><a href="https://www.usenix.org/sites/default/files/nsdi16-paper-eisenbud.pdf">Maglev paper PDF — USENIX</a></li>
+<li><a href="https://developers.cloudflare.com/smart-shield/">Cloudflare Smart Shield — Tiered Cache, connection reuse, origin protection</a></li>
+<li><a href="https://developers.cloudflare.com/cache/advanced-configuration/cache-reserve/">Cloudflare Cache Reserve — persistent upper-tier storage on R2</a></li>
+<li><a href="https://www.cloudflare.com/network/">Cloudflare Global Network — PoP / city map</a></li>
+<li><a href="https://openconnect.netflix.com/">Netflix Open Connect — ISP-embedded CDN overview</a></li>
+<li><a href="https://sujeet.pro/articles/cdn-architecture-and-caching">CDN Architecture and Edge Caching — Sujeet Jaiswal (routing, Maglev, keys, shielding)</a></li>
+<li><a href="https://www.w3.org/TR/edge-arch/">W3C Edge Architecture Specification 1.0 — Surrogate-Capability / Surrogate-Control lineage</a></li>
+</ol>
+</div>
+
+</body>
+</html>

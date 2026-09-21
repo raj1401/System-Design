@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Service Discovery: Client-Side vs Server-Side Registries</title>
+<meta name="description" content="How microservices find each other without hard-coded IPs: client-side vs server-side discovery, DNS catalogs, Eureka, Consul, and Kubernetes Services.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Service Discovery: Client-Side vs Server-Side Registries</h1>
+<p class="subtitle">How services find healthy peers when IPs keep changing under them</p>
+<p class="meta">September 21, 2026 &middot; 5 min read</p>
+
+<h2>The Concept, Briefly</h2>
+<p>
+<strong>Service discovery</strong> is the mechanism that maps a logical service name (for example <code>payment-service</code>) to the current set of network endpoints that implement it. In a dynamic fleet, instances come and go, change IPs on restart, and fail health checks; hard-coded host lists cannot keep up. Discovery uses a <em>service catalog</em> (registry) so callers resolve identity to address at runtime instead of bake-time.
+</p>
+<p>
+HashiCorp frames the idea as discovering services by identity rather than by static IP and port: consumers look up access information from a catalog that tracks registration and health as the fleet evolves. Two dominant patterns emerge: <strong>client-side discovery</strong>, where the caller queries the registry and picks an instance itself, and <strong>server-side discovery</strong>, where an intermediary (load balancer, proxy, or mesh sidecar) does the lookup and routing on the caller's behalf.
+</p>
+
+<div class="callout">
+<strong>Why this matters:</strong> Without discovery, every deploy becomes a configuration chase across callers. With it, autoscaling, rolling updates, and multi-zone failover become catalog updates rather than redeploys of every dependent service.
+</div>
+
+<h2>Underlying Ideas &amp; Mechanisms</h2>
+
+<h3>The Service Catalog Lifecycle</h3>
+<p>
+A typical instance lifecycle is register → heartbeat / health-check → deregister (or expire). On registration the instance publishes name, IP, port, and optional metadata (zone, version, weight). Periodic renewals prove liveness; missing renewals or failed active checks remove the instance from healthy results so callers stop targeting it.
+</p>
+<p>
+Netflix Eureka is a classic client-side registry for mid-tier load balancing and failover in AWS. Services register with Eureka and renew leases about every 30 seconds; if renewals stop, the instance is normally removed after roughly 90 seconds. Clients periodically fetch (and cache) the registry, then load-balance locally to chosen instances.
+</p>
+
+<h3>Client-Side Discovery</h3>
+<p>
+In client-side discovery the consumer is responsible for the full path: query the registry, apply a load-balancing policy (round-robin, weighted, zone-aware), and dial the chosen instance directly. No proxy sits in the data path for that hop. Flexibility is high — each team can tune retries and affinity — but every language and framework needs a capable registry client, and stale caches can briefly send traffic to dead instances.
+</p>
+
+<h3>Server-Side Discovery</h3>
+<p>
+In server-side discovery the consumer dials a stable virtual address. An intermediary consults the catalog, selects a healthy backend, and forwards the request. Kubernetes <code>Service</code> objects are the everyday example: CoreDNS publishes a DNS name; traffic to the Service's ClusterIP is distributed by kube-proxy (or an equivalent dataplane) to ready pods tracked via EndpointSlices. Callers stay simple and polyglot-friendly; the cost is an extra hop and dependency on the proxy tier.
+</p>
+
+<div class="diagram-container">
+<h4>Client-Side vs Server-Side Discovery</h4>
+<svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <!-- Left: client-side -->
+  <text x="190" y="28" text-anchor="middle" fill="#6c8cff" font-size="13" font-weight="700">CLIENT-SIDE</text>
+  <rect x="40" y="50" width="100" height="44" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="90" y="77" text-anchor="middle" fill="#e1e4ed" font-size="12" font-weight="600">Caller</text>
+  <rect x="180" y="50" width="120" height="44" rx="8" fill="#232733" stroke="#ffd93d" stroke-width="2"/>
+  <text x="240" y="70" text-anchor="middle" fill="#ffd93d" font-size="11" font-weight="700">Registry</text>
+  <text x="240" y="86" text-anchor="middle" fill="#8b90a0" font-size="10">Eureka / Consul API</text>
+  <path d="M140 72 H180" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="160" y="64" text-anchor="middle" fill="#8b90a0" font-size="9">1. lookup</text>
+  <rect x="40" y="160" width="90" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="85" y="183" text-anchor="middle" fill="#4ecdc4" font-size="11">Inst A</text>
+  <rect x="150" y="160" width="90" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="195" y="183" text-anchor="middle" fill="#4ecdc4" font-size="11">Inst B</text>
+  <rect x="260" y="160" width="90" height="36" rx="6" fill="#232733" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="305" y="183" text-anchor="middle" fill="#4ecdc4" font-size="11">Inst C ✕</text>
+  <path d="M90 94 V160" stroke="#6c8cff" stroke-width="1.5"/>
+  <path d="M90 130 H195 V160" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="145" y="124" fill="#8b90a0" font-size="9">2. pick + dial</text>
+  <text x="190" y="230" text-anchor="middle" fill="#8b90a0" font-size="11">Client caches catalog; LB lives in-process</text>
+
+  <!-- Divider -->
+  <line x1="380" y1="40" x2="380" y2="300" stroke="#2e3345" stroke-width="1" stroke-dasharray="4 4"/>
+
+  <!-- Right: server-side -->
+  <text x="570" y="28" text-anchor="middle" fill="#4ecdc4" font-size="13" font-weight="700">SERVER-SIDE</text>
+  <rect x="420" y="50" width="100" height="44" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="470" y="77" text-anchor="middle" fill="#e1e4ed" font-size="12" font-weight="600">Caller</text>
+  <rect x="560" y="50" width="140" height="44" rx="8" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="630" y="70" text-anchor="middle" fill="#4ecdc4" font-size="11" font-weight="700">LB / Proxy</text>
+  <text x="630" y="86" text-anchor="middle" fill="#8b90a0" font-size="10">kube-proxy / Envoy</text>
+  <path d="M520 72 H560" stroke="#8b90a0" stroke-width="1.5"/>
+  <text x="540" y="64" text-anchor="middle" fill="#8b90a0" font-size="9">1. stable VIP</text>
+  <rect x="500" y="140" width="100" height="32" rx="6" fill="#1a1d27" stroke="#ffd93d" stroke-width="1.5"/>
+  <text x="550" y="161" text-anchor="middle" fill="#4ecdc4" font-size="10">Catalog / Endpoints</text>
+  <path d="M630 94 V140" stroke="#ffd93d" stroke-width="1.5" stroke-dasharray="3 3"/>
+  <text x="648" y="120" fill="#8b90a0" font-size="9">lookup</text>
+  <rect x="450" y="210" width="80" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="490" y="233" text-anchor="middle" fill="#4ecdc4" font-size="11">Pod A</text>
+  <rect x="555" y="210" width="80" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="595" y="233" text-anchor="middle" fill="#4ecdc4" font-size="11">Pod B</text>
+  <rect x="660" y="210" width="80" height="36" rx="6" fill="#232733" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="700" y="233" text-anchor="middle" fill="#ff6b9d" font-size="11">Pod C ✕</text>
+  <path d="M590 182 V210" stroke="#6c8cff" stroke-width="1.5"/>
+  <path d="M630 182 H700 V210" stroke="#6c8cff" stroke-width="1.5"/>
+  <path d="M590 182 H490 V210" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="570" y="280" text-anchor="middle" fill="#8b90a0" font-size="11">Caller unaware of instance set</text>
+</svg>
+</div>
+
+<h3>DNS as the Universal Interface</h3>
+<p>
+DNS is the original discovery API: every language can resolve a name, and no proprietary client is required. Consul exposes healthy instances over DNS (commonly under <code>.consul</code>) and an HTTP catalog API. Kubernetes CoreDNS creates A and SRV records for each Service so pods can resolve names like <code>my-service.my-ns.svc.cluster.local</code>.
+</p>
+<p>
+The tradeoff is caching. Resolvers honor TTLs; even with low TTLs you cannot guarantee instantaneous failover when an instance dies. For short-lived pods and aggressive scale events, pure DNS discovery often pairs with short TTLs, client reconnect logic, or a headless Service that returns pod IPs so the application (or a mesh) owns load balancing.
+</p>
+
+<h3>Health Checks and Consistency</h3>
+<p>
+Discovery is only as good as its health signal. Eureka leans on lease renewals and prefers availability — during suspected partitions it can enter self-preservation and stop expiring instances so a network blip does not empty the catalog. Consul agents run active and passive checks and push status into a Raft-backed server catalog, with gossip (Serf) handling membership among agents. Kubernetes readiness gates which endpoints are eligible for Service traffic.
+</p>
+
+<div class="diagram-container">
+<h4>Kubernetes Service Resolution Path</h4>
+<svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="20" y="80" width="100" height="50" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="70" y="110" text-anchor="middle" fill="#e1e4ed" font-size="12" font-weight="600">Pod</text>
+  <rect x="160" y="80" width="110" height="50" rx="8" fill="#232733" stroke="#ffd93d" stroke-width="2"/>
+  <text x="215" y="102" text-anchor="middle" fill="#ffd93d" font-size="12" font-weight="700">CoreDNS</text>
+  <text x="215" y="118" text-anchor="middle" fill="#8b90a0" font-size="10">A / SRV records</text>
+  <rect x="310" y="80" width="120" height="50" rx="8" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="370" y="102" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="700">ClusterIP</text>
+  <text x="370" y="118" text-anchor="middle" fill="#8b90a0" font-size="10">stable virtual IP</text>
+  <rect x="470" y="80" width="110" height="50" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="525" y="102" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="700">kube-proxy</text>
+  <text x="525" y="118" text-anchor="middle" fill="#8b90a0" font-size="10">or CNI dataplane</text>
+  <rect x="610" y="50" width="90" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="655" y="73" text-anchor="middle" fill="#4ecdc4" font-size="11">Ready pod</text>
+  <rect x="610" y="100" width="90" height="36" rx="6" fill="#232733" stroke="#4ecdc4" stroke-width="1.5"/>
+  <text x="655" y="123" text-anchor="middle" fill="#4ecdc4" font-size="11">Ready pod</text>
+  <rect x="610" y="150" width="90" height="36" rx="6" fill="#232733" stroke="#ff6b9d" stroke-width="1.5"/>
+  <text x="655" y="173" text-anchor="middle" fill="#ff6b9d" font-size="11">Not ready</text>
+  <path d="M120 105 H160" stroke="#8b90a0" stroke-width="1.5"/>
+  <path d="M270 105 H310" stroke="#8b90a0" stroke-width="1.5"/>
+  <path d="M430 105 H470" stroke="#8b90a0" stroke-width="1.5"/>
+  <path d="M580 105 H610" stroke="#8b90a0" stroke-width="1.5"/>
+  <text x="360" y="40" text-anchor="middle" fill="#8b90a0" font-size="11">Name → DNS → VIP → healthy endpoints (EndpointSlices)</text>
+  <text x="360" y="210" text-anchor="middle" fill="#8b90a0" font-size="11">Headless Services (clusterIP: None) skip the VIP and return pod IPs via DNS</text>
+</svg>
+</div>
+
+<h2>Design Comparison</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:var(--accent2)">Client-Side Discovery</h4>
+    <ul>
+      <li>Caller queries registry and load-balances in-process</li>
+      <li>No extra proxy hop on the data path</li>
+      <li>Fine-grained control over LB, retries, and affinity</li>
+      <li>Needs a solid client library per language</li>
+      <li>Cache staleness can briefly hit dead instances</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:var(--accent3)">Server-Side Discovery</h4>
+    <ul>
+      <li>Caller uses one stable name or VIP</li>
+      <li>Proxy or LB owns lookup and health routing</li>
+      <li>Ideal for polyglot fleets and managed platforms</li>
+      <li>Adds a network hop and a critical dataplane dependency</li>
+      <li>Default fit for Kubernetes Services and service meshes</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Netflix Eureka</div>
+    <div class="desc">REST registry underpinning mid-tier load balancing and failover in AWS; clients cache the catalog and renew instance leases on a fixed cadence.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">HashiCorp Consul</div>
+    <div class="desc">Platform-agnostic catalog with DNS and HTTP lookup, agent health checks, Raft-backed servers, and multi-datacenter federation options.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Kubernetes Services</div>
+    <div class="desc">CoreDNS plus ClusterIP (or headless) discovery; EndpointSlices track ready pods so in-cluster callers resolve by Service name.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Service Mesh (Envoy)</div>
+    <div class="desc">Sidecars implement server-side discovery with centralized traffic policy, mTLS, and retries — discovery leaves application code entirely.</div>
+  </div>
+</div>
+
+<h2>Trade-offs to Keep in Mind</h2>
+<p>
+Pick client-side discovery when you need custom load-balancing logic and can standardize on one discovery stack (historically Eureka + Ribbon / Spring Cloud LoadBalancer). Prefer server-side discovery on Kubernetes or when many languages must share one operational model. Treat DNS TTLs as a latency dial, not a guarantee of instant failover. Couple discovery tightly with health checks: a perfect registry that lists unhealthy instances is worse than a slightly stale registry that only lists healthy ones.
+</p>
+<p>
+Service discovery also sits next to — but is not the same as — membership gossip. Gossip (as in Consul's Serf or Cassandra) spreads node liveness; the catalog answers "which healthy endpoints implement <em>this</em> service name." Production systems often combine both: gossip for agent/node health, a strongly or eventually consistent catalog for service lookups.
+</p>
+
+<div class="sources">
+<h2>Sources &amp; Further Reading</h2>
+<ol>
+<li><a href="https://docs.hashicorp.com/consul/docs/use-case/service-discovery">Service Discovery Explained — HashiCorp Consul</a></li>
+<li><a href="https://developer.hashicorp.com/consul/docs/architecture/control-plane">Consul control plane architecture — HashiCorp Developer</a></li>
+<li><a href="https://github.com/Netflix/eureka/wiki/Eureka-at-a-glance">Eureka at a glance — Netflix Eureka Wiki</a></li>
+<li><a href="https://github.com/Netflix/eureka/wiki/Understanding-eureka-client-server-communication">Understanding Eureka client-server communication — Netflix Eureka Wiki</a></li>
+<li><a href="https://netflixtechblog.com/netflix-shares-cloud-load-balancing-and-failover-tool-eureka-c10647ef95e5">Netflix Shares Cloud Load Balancing And Failover Tool: Eureka — Netflix TechBlog</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service — Kubernetes Documentation</a></li>
+<li><a href="https://www.application-architect.com/posts/system-design-service-discovery-patterns/">System Design: Service Discovery Patterns — Application Architect</a></li>
+</ol>
+</div>
+
+</body>
+</html>

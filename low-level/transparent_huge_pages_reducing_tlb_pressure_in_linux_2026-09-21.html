@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="How Linux Transparent Huge Pages promote 4KB base pages to 2MB (and multi-size) pages to cut TLB pressure, with khugepaged collapse and split, anon vs shmem THP, madvise hints, sysfs knobs, and the latency and fragmentation tradeoffs.">
+  <title>Transparent Huge Pages: Reducing TLB Pressure in Linux</title>
+  <style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+  <div class="badge">Low-Level System Design</div>
+  <h1>Transparent Huge Pages: Reducing TLB Pressure in Linux</h1>
+  <p class="subtitle">How the kernel promotes base pages to 2MB (and larger) pages — and when that helps or hurts</p>
+  <p class="meta">September 21, 2026 &middot; 5 min read</p>
+
+  <h2>Summary</h2>
+  <p>
+    Every virtual address walk ends at a Translation Lookaside Buffer (TLB) entry. On x86-64 a base page is 4&nbsp;KB, so a large working set can thrash a TLB that holds only a few thousand entries. <strong>Transparent Huge Pages (THP)</strong> let the kernel back anonymous (and tmpfs/shmem) mappings with larger pages — traditionally a PMD-sized 2&nbsp;MB page, and on modern kernels also intermediate <em>multi-size THP</em> (mTHP) orders like 16&nbsp;KB–1&nbsp;MB — so one TLB slot covers far more virtual memory.
+  </p>
+  <p>
+    Unlike hugetlbfs, THP needs no reserved pool and no application rewrite. Promotion can happen at fault time or asynchronously via the <code>khugepaged</code> daemon, which collapses contiguous base pages into a huge page; demotion (split) happens under pressure, partial unmap, or when a THP looks underused. Controls live under <code>/sys/kernel/mm/transparent_hugepage/</code>, with per-range hints via <code>madvise(MADV_HUGEPAGE)</code> / <code>MADV_NOHUGEPAGE</code> / <code>MADV_COLLAPSE</code>.
+  </p>
+
+  <h2>Deeper Dive</h2>
+
+  <h3>Why huge pages help</h3>
+  <p>
+    Kernel docs emphasize two effects. The first is fewer page faults on first touch: one fault can populate a 2&nbsp;MB region instead of 512 separate 4&nbsp;KB faults. The lasting win is TLB reach — a single entry maps 512× more memory, and TLB misses themselves are cheaper (especially under nested page tables in KVM). That is why databases, JVMs, and VMs that walk large heaps often see clear gains when THP sticks.
+  </p>
+
+  <h3>Collapse and split</h3>
+  <p>
+    At fault time, if policy allows and a naturally aligned free huge page is available (after optional compaction/defrag), the kernel may install a THP immediately. Otherwise it falls back to base pages. Later, <code>khugepaged</code> scans eligible VMAs and tries to <em>collapse</em> runs of base pages into a huge folio, respecting knobs like <code>max_ptes_none</code> (how many empty/zero PTEs are tolerated), <code>max_ptes_swap</code>, and <code>max_ptes_shared</code>.
+  </p>
+  <p>
+    The reverse path is <em>split</em>: a huge page may be broken into base pages for reclaim, swapout failure, <code>mprotect</code>/<code>munmap</code> on a subrange (PMD split into PTEs), or because the underused shrinker finds too many zero pages. Partially unmapped THPs land on a deferred-split list and are split under memory pressure.
+  </p>
+
+  <div class="diagram-container">
+    <h4>Base pages vs PMD-sized THP (x86-64)</h4>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" width="680" height="300" role="img" aria-label="Diagram comparing 512 base pages to one 2MB THP and TLB coverage">
+      <rect x="0" y="0" width="720" height="320" fill="#1a1d27" rx="8"/>
+      <!-- Left: base pages -->
+      <text x="160" y="28" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="13" font-weight="600">512 × 4 KB base pages</text>
+      <g>
+        <rect x="40" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="72" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="104" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="136" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="168" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="200" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <rect x="232" y="48" width="28" height="36" fill="#232733" stroke="#6c8cff" stroke-width="1.5"/>
+        <text x="278" y="72" fill="#8b90a0" font-family="Inter,sans-serif" font-size="18">…</text>
+      </g>
+      <text x="160" y="110" text-anchor="middle" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="12">512 TLB entries needed</text>
+      <!-- Arrow -->
+      <path d="M160 130 L160 165" stroke="#4ecdc4" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#4ecdc4"/>
+        </marker>
+      </defs>
+      <text x="160" y="158" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="11">khugepaged collapse</text>
+      <!-- Right / bottom: THP -->
+      <rect x="50" y="180" width="220" height="56" fill="#232733" stroke="#4ecdc4" stroke-width="2" rx="6"/>
+      <text x="160" y="205" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="14" font-weight="600">1 × 2 MB THP</text>
+      <text x="160" y="225" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">PMD-mapped folio</text>
+      <text x="160" y="260" text-anchor="middle" fill="#ffd93d" font-family="Inter,sans-serif" font-size="12">1 TLB entry covers the same VA range</text>
+      <!-- Right panel: lifecycle -->
+      <rect x="360" y="40" width="320" height="250" fill="#232733" rx="8" stroke="#2e3345"/>
+      <text x="520" y="68" text-anchor="middle" fill="#6c8cff" font-family="Inter,sans-serif" font-size="13" font-weight="600">THP lifecycle</text>
+      <text x="380" y="100" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="12">1. Fault alloc (or fallback)</text>
+      <text x="380" y="128" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="12">2. khugepaged collapse</text>
+      <text x="380" y="156" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="12">3. Access via huge TLB entry</text>
+      <text x="380" y="184" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="12">4. Split on pressure / unmap</text>
+      <text x="380" y="212" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">Sysfs: enabled / defrag /</text>
+      <text x="380" y="230" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">khugepaged/*  ·  madvise hints</text>
+      <text x="380" y="262" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="11">mTHP: 16K–1M PTE-mapped too</text>
+    </svg>
+  </div>
+
+  <h3>Anon vs file/shmem THP</h3>
+  <p>
+    Classic THP targets <em>anonymous</em> mappings. File-backed THP today is mainly tmpfs/shmem (SysV SHM, memfds, shared anonymous maps, some DRM objects), controlled via <code>shmem_enabled</code> and per-size knobs — not arbitrary ext4/XFS pages. <code>khugepaged</code> may collapse file/shmem only to PMD size; anonymous memory can also collapse to other mTHP orders when those sizes are enabled.
+  </p>
+
+  <h3>Policy knobs</h3>
+  <p>
+    Top-level <code>enabled</code> is typically <code>always</code>, <code>madvise</code>, or <code>never</code> (per-size dirs under <code>hugepages-&lt;size&gt;kB/</code> can <code>inherit</code>). <code>defrag</code> chooses how aggressively the allocator runs reclaim/compaction on fault (<code>always</code>, <code>defer</code>, <code>defer+madvise</code>, <code>madvise</code>, <code>never</code>). Boot parameters <code>transparent_hugepage=</code> and <code>thp_anon=</code> set defaults. Process-wide disable uses <code>prctl(PR_SET_THP_DISABLE, …)</code>.
+  </p>
+
+  <div class="callout">
+    <strong>Latency trap:</strong> With <code>enabled=always</code> and aggressive defrag, a sparse touch can allocate a full 2&nbsp;MB page and stall in compaction — classic “THP latency spikes” in Redis, MongoDB, and latency-sensitive services. Prefer <code>madvise</code> policy plus <code>MADV_HUGEPAGE</code> on dense heaps, or lower <code>max_ptes_none</code> so khugepaged is less eager to collapse sparse regions. Watch <code>/proc/vmstat</code> counters like <code>thp_fault_alloc</code>, <code>thp_fault_fallback</code>, and <code>compact_stall</code>.
+  </div>
+
+  <h3>madvise and alignment</h3>
+  <p>
+    <a href="https://man7.org/linux/man-pages/man2/madvise.2.html"><code>madvise(2)</code></a> <code>MADV_HUGEPAGE</code> marks a range as a THP candidate; <code>MADV_NOHUGEPAGE</code> opts out. <code>MADV_COLLAPSE</code> (Linux 6.1+) best-effort synchronously collapses the current mapping to PMD-sized THPs and can ignore some global “never” settings (though <code>VM_NOHUGEPAGE</code> still wins). For fault-time THP, hugepage-natural alignment (e.g. <code>posix_memalign</code>) matters.
+  </p>
+
+  <div class="comparison">
+    <div class="comparison-card">
+      <h4 style="color: #4ecdc4;">When THP helps</h4>
+      <ul>
+        <li>Dense, long-lived heaps (DB buffers, JVM heaps)</li>
+        <li>Guest RAM under KVM with nested walks</li>
+        <li>Sequential scans over large anon/tmpfs regions</li>
+        <li>Enough free contiguous memory / light fragmentation</li>
+      </ul>
+    </div>
+    <div class="comparison-card">
+      <h4 style="color: #ff6b9d;">When THP hurts</h4>
+      <ul>
+        <li>Sparse touch patterns (1 byte → 2 MB waste)</li>
+        <li>Latency SLOs vs compaction stalls</li>
+        <li>NUMA: remote huge pages amplify cross-node cost</li>
+        <li>Heavy split churn under reclaim / partial munmap</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Real-World Use Cases</h2>
+  <div class="use-case-grid">
+    <div class="use-case">
+      <div class="label">Databases &amp; caches</div>
+      <div class="desc">PostgreSQL shared buffers, Redis, or RocksDB working sets benefit from TLB reach; many operators set madvise-mode THP and hint only buffer arenas.</div>
+    </div>
+    <div class="use-case">
+      <div class="label">Virtual machines</div>
+      <div class="desc">Host THP backing guest RAM reduces nested page-walk cost; combine with guest hugepages for the full nested benefit described in the admin guide.</div>
+    </div>
+    <div class="use-case">
+      <div class="label">Language runtimes</div>
+      <div class="desc">JVM/Go heaps that are dense and aligned; some runtimes expose flags to request or disable THP for the managed heap.</div>
+    </div>
+    <div class="use-case">
+      <div class="label">HPC / analytics</div>
+      <div class="desc">Large scientific arrays and in-memory analytics pipelines cut TLB misses when data is contiguous and long-lived.</div>
+    </div>
+  </div>
+
+  <p>
+    On NUMA systems, a 2&nbsp;MB remote page is an expensive mistake: preference for local allocation still applies, and collapsing across nodes (or migrating later) interacts poorly with latency-sensitive workloads. Pair THP policy with explicit memory policy where locality matters.
+  </p>
+
+  <div class="sources">
+    <h2>References</h2>
+    <ol>
+      <li><a href="https://docs.kernel.org/admin-guide/mm/transhuge.html">Transparent Hugepage Support — Linux Kernel Admin Guide</a></li>
+      <li><a href="https://docs.kernel.org/next/mm/transhuge.html">Transparent Hugepage Support — design notes (kernel docs /next)</a></li>
+      <li><a href="https://man7.org/linux/man-pages/man2/madvise.2.html">madvise(2) — MADV_HUGEPAGE, MADV_NOHUGEPAGE, MADV_COLLAPSE</a></li>
+      <li><a href="https://lwn.net/Articles/1073407/">Jonathan Corbet, “Better automatic management of transparent huge pages,” LWN.net, May 26, 2026</a></li>
+      <li><a href="https://www.kernel.org/doc/html/latest/admin-guide/mm/transhuge.html">Kernel.org HTML — Transparent Hugepage Support (latest)</a></li>
+    </ol>
+  </div>
+</body>
+</html>

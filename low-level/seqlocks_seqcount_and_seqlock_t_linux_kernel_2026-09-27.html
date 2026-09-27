@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="How Linux seqcount_t and seqlock_t give lockless readers consistent snapshots via retry loops, why pointers are forbidden, and when seqcount_latch serves NMI-safe timekeeping.">
+<title>Seqlocks: seqcount_t, seqlock_t, and Latch Counters in the Linux Kernel</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Seqlocks: seqcount_t, seqlock_t, and Latch Counters in the Linux Kernel</h1>
+<p class="subtitle">Lockless readers, writer-serialized updates, and NMI-safe dual-copy latches</p>
+<p class="meta">September 27, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>
+A <em>sequence counter</em> is a reader-writer consistency mechanism with lockless readers and no writer starvation. Readers copy a small data set inside a retry loop; writers bump a sequence number before and after the update so an odd value means &ldquo;write in progress&rdquo; and a changed even value means &ldquo;retry.&rdquo; The kernel documents this in <a href="https://docs.kernel.org/locking/seqlock.html">Sequence counters and sequential locks</a>: use it for data that is rarely written (classic example: system time) when the reader wants a consistent snapshot and is willing to retry if that snapshot changes.
+</p>
+<p>
+<code>seqcount_t</code> is the raw counter — you serialize writers yourself. <code>seqlock_t</code> wraps a seqcount plus an embedded spinlock so write sections are automatically serialized and non-preemptible. Neither may protect data that contains pointers a reader might follow: the writer can invalidate a pointer after the reader has already loaded it. For NMI (or other contexts that can interrupt a writer), <code>seqcount_latch_t</code> keeps two copies and flips readers between them via the counter&rsquo;s LSB — formalized in the 5.10 era as covered by <a href="https://lwn.net/Articles/831540/">LWN&rsquo;s seqcount latch article</a>.
+</p>
+
+<h2>Deeper Dive</h2>
+
+<h3>How the retry loop works</h3>
+<p>
+Writers call <code>write_seqcount_begin()</code> (sequence becomes odd) then <code>write_seqcount_end()</code> (even again), with write barriers so counter updates order against the payload. Readers do:
+</p>
+<p>
+<code>do { seq = read_seqcount_begin(&amp;s); /* copy fields */ } while (read_seqcount_retry(&amp;s, seq));</code>
+</p>
+<p>
+<code>read_seqcount_begin</code> waits while the counter is odd (a write is live), then returns the even value. After copying, <code>read_seqcount_retry</code> re-reads the counter; any change means the copy may be torn and the loop repeats. Consistency means: start even, end equal to start, and the data must be <em>copied out</em> inside the critical section — not used via dangling references afterward.
+</p>
+
+<div class="diagram-container">
+<h4>Writer bumps sequence; reader retries on mismatch</h4>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" width="720" height="300" role="img" aria-label="Seqlock reader retry and writer sequence bumps">
+  <rect x="20" y="20" width="200" height="100" rx="10" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="120" y="50" text-anchor="middle" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="13" font-weight="600">Writer</text>
+  <text x="120" y="72" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">seq++ → odd</text>
+  <text x="120" y="90" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">update data</text>
+  <text x="120" y="108" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">seq++ → even</text>
+
+  <rect x="260" y="20" width="200" height="100" rx="10" fill="#1a1d27" stroke="#6c8cff" stroke-width="2"/>
+  <text x="360" y="50" text-anchor="middle" fill="#6c8cff" font-family="Inter,sans-serif" font-size="13" font-weight="600">Sequence</text>
+  <text x="360" y="75" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="12">even = stable</text>
+  <text x="360" y="95" text-anchor="middle" fill="#ffd93d" font-family="Inter,sans-serif" font-size="12">odd = write live</text>
+
+  <rect x="500" y="20" width="200" height="100" rx="10" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="600" y="50" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="13" font-weight="600">Reader</text>
+  <text x="600" y="72" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">read_seqbegin</text>
+  <text x="600" y="90" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">copy fields</text>
+  <text x="600" y="108" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">retry if changed</text>
+
+  <path d="M220 70 L255 70" stroke="#ff6b9d" stroke-width="2" marker-end="url(#a1)"/>
+  <path d="M460 70 L495 70" stroke="#6c8cff" stroke-width="2" marker-end="url(#a2)"/>
+
+  <rect x="80" y="160" width="560" height="110" rx="10" fill="#232733" stroke="#2e3345" stroke-width="1"/>
+  <text x="360" y="190" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="13" font-weight="600">Lockless path (no writer wait)</text>
+  <text x="360" y="215" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Writers never wait for sequence readers</text>
+  <text x="360" y="238" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Readers may spin/retry if writes are frequent or long</text>
+  <text x="360" y="258" text-anchor="middle" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="12">No pointers in protected data</text>
+
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ff6b9d"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>seqcount_t vs seqlock_t</h3>
+<p>
+<code>seqcount_t</code> does not protect against multiple writers. You must hold an external lock (spinlock, mutex, &hellip;) around <code>write_seqcount_begin/end</code>, and keep the write section non-preemptible. If readers can run from hardirq or softirq, the write path must disable IRQs or BHs accordingly. Variants like <code>seqcount_spinlock_t</code> / <code>seqcount_mutex_t</code> associate the lock at init so lockdep can check that write sections are properly serialized (zero overhead when lockdep is off).
+</p>
+<p>
+<code>seqlock_t</code> embeds a seqcount plus a spinlock. <code>write_seqlock()</code> / <code>write_sequnlock()</code> take that lock and bump the sequence; use <code>_bh</code> / <code>_irq</code> / <code>_irqsave</code> variants when readers (or other writers) may run from softirq or hardirq. On the read side the docs list three styles: (1) normal lockless <code>read_seqbegin</code> / <code>read_seqretry</code>; (2) exclusive locking readers via <code>read_seqlock_excl</code> (only one locking reader, unlike <code>rwlock_t</code>); (3) <code>read_seqbegin_or_lock</code> — try lockless first, then fall back to a locking reader to avoid starvation under a write spike.
+</p>
+
+<div class="callout">
+<strong>Writer must not be interrupted by its own readers:</strong> If a write section is preempted or interrupted by a reader of the same seqcount, that reader can spin for a full tick on the odd counter — and an RT reader can livelock forever. That is why write paths disable preemption (and often IRQs/BHs), or why you switch to a latch when NMI readers cannot be masked.
+</div>
+
+<h3>The no-pointers rule (vs RCU)</h3>
+<p>
+Kernel documentation is explicit: this mechanism cannot be used if the protected data contains pointers, because the writer can invalidate a pointer the reader is following. Seqlocks are for small, fixed-size payloads (timestamps, counters, a handful of integers) that readers copy by value. For pointer-heavy or dynamically allocated structures — lists, trees, tables that grow — use RCU: publish a new version, keep the old one alive until a grace period, and let readers dereference safely. Seqlock and RCU are complementary, not substitutes.
+</p>
+
+<div class="diagram-container">
+<h4>seqcount_latch: two copies, LSB selects the live set</h4>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 280" width="720" height="280" role="img" aria-label="Seqcount latch dual-copy MVCC">
+  <rect x="40" y="30" width="180" height="90" rx="10" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="130" y="60" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="13" font-weight="600">data[0]</text>
+  <text x="130" y="85" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">stable while</text>
+  <text x="130" y="102" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">seq LSB = 0</text>
+
+  <rect x="270" y="30" width="180" height="90" rx="10" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="360" y="60" text-anchor="middle" fill="#ffd93d" font-family="Inter,sans-serif" font-size="13" font-weight="600">data[1]</text>
+  <text x="360" y="85" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">stable while</text>
+  <text x="360" y="102" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">seq LSB = 1</text>
+
+  <rect x="500" y="30" width="180" height="90" rx="10" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="590" y="60" text-anchor="middle" fill="#6c8cff" font-family="Inter,sans-serif" font-size="13" font-weight="600">Writer</text>
+  <text x="590" y="82" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">modify inactive</text>
+  <text x="590" y="100" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">then flip latch</text>
+
+  <path d="M450 75 L495 75" stroke="#6c8cff" stroke-width="2" marker-end="url(#a3)"/>
+
+  <rect x="80" y="160" width="560" height="90" rx="10" fill="#1a1d27" stroke="#2e3345" stroke-width="1"/>
+  <text x="360" y="190" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="13" font-weight="600">NMI / interruptible write path</text>
+  <text x="360" y="215" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Reader always has a stable copy — no spin on odd seq from same-CPU writer</text>
+  <text x="360" y="235" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Cost: 2&times; storage · rare API (timekeeping, sched_clock)</text>
+
+  <defs>
+    <marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>seqcount_latch_t</h3>
+<p>
+A latch is multiversion concurrency control: the even/odd value of the embedded counter selects which of two data copies is live. The writer updates the inactive copy, then redirects readers with <code>write_seqcount_latch*</code>, then updates the other copy. Readers use <code>read_seqcount_latch</code>, take <code>idx = seq &amp; 0x01</code>, query <code>data[idx]</code>, and retry with <code>read_seqcount_latch_retry</code>. Because a stable copy always exists, a reader that interrupts its own writer does not deadlock spinning on an odd counter — critical when the read path can run from NMI. Jonathan Corbet&rsquo;s LWN piece notes Mathieu Desnoyers introduced the technique in 2014; Ahmed Darwish formalized <code>seqcount_latch_t</code> for 5.10. Situations that truly need a latch remain rare; timekeeping and <code>sched_clock</code> are the textbook cases.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color: var(--accent4);">Seqlock / seqcount</h4>
+    <ul>
+      <li>Lockless reads; writers never wait</li>
+      <li>Small fixed data; copy by value</li>
+      <li>No pointers in the payload</li>
+      <li>Write must not be interrupted by readers</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color: var(--accent2);">RCU / rwlock</h4>
+    <ul>
+      <li>RCU: pointer publish + grace period</li>
+      <li>rwlock: shared readers, exclusive writers</li>
+      <li>Safe for dynamic / pointer structures</li>
+      <li>Writers may wait for readers (rwlock)</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Timekeeping</div>
+    <div class="desc">System time and clocksource math are classic seqcount/latch workloads: updated on ticks, read constantly, must stay consistent without locking every <code>ktime_get</code>.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">jiffies_64 (32-bit)</div>
+    <div class="desc"><code>get_jiffies_64()</code> uses <code>jiffies_lock</code> (<code>seqlock_t</code>) so a 64-bit counter can be read safely where a single load is not atomic.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">sched_clock / NMI</div>
+    <div class="desc"><code>seqcount_latch_t</code> in timekeeping paths lets NMI (or interrupt) readers observe a stable copy even if they interrupt an in-progress update.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Write-spike readers</div>
+    <div class="desc"><code>read_seqbegin_or_lock</code> starts lockless, then falls back to an exclusive locking reader so retry storms under heavy writers do not starve the reader.</div>
+  </div>
+</div>
+
+<div class="callout">
+<strong>When to pick what:</strong> Seqlock for small, rarely written, non-pointer data with many readers. Latch when those readers can interrupt the writer (NMI). RCU when the structure is pointer-based or dynamically allocated. Plain <code>rwlock_t</code> when you need shared readers that must not tear and you can afford writers waiting.
+</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/locking/seqlock.html">Sequence counters and sequential locks — The Linux Kernel documentation</a> (<code>seqcount_t</code>, <code>seqlock_t</code>, latch, APIs)</li>
+  <li><a href="https://www.kernel.org/doc/Documentation/locking/seqlock.rst">Documentation/locking/seqlock.rst</a> — source RST in the kernel tree</li>
+  <li><a href="https://lwn.net/Articles/831540/">Jonathan Corbet, &ldquo;The seqcount latch lock type,&rdquo; LWN.net, Sep 2020</a> — Desnoyers latch, Darwish <code>seqcount_latch_t</code> for 5.10</li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/seqlock.h">include/linux/seqlock.h</a> — seqcount / seqlock / latch definitions and helpers</li>
+  <li><a href="https://en.wikipedia.org/wiki/Sequential_Lock">Seqlock — Wikipedia</a> — history (Hemminger / Arcangeli), no-pointers limitation vs RCU</li>
+  <li><a href="https://kernel-internals.org/locking/seqlock/">Seqlock — Linux Kernel Internals</a> — <code>jiffies_64</code> and timekeeping latch examples</li>
+  <li><a href="https://docs.kernel.org/RCU/whatisRCU.html">What is RCU? — The Linux Kernel documentation</a> — complementary pointer-safe read-side primitive</li>
+</ol>
+</div>
+</body>
+</html>

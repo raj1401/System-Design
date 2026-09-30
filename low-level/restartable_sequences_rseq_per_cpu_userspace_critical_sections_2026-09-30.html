@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="How Linux restartable sequences (rseq) let userspace run short per-CPU critical sections that abort on preemption or migration, the rseq syscall and __rseq_abi, glibc/librseq, and real uses in allocators and ring buffers.">
+<title>Restartable Sequences (rseq): Per-CPU Userspace Critical Sections in Linux</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Restartable Sequences (rseq): Per-CPU Userspace Critical Sections in Linux</h1>
+<p class="subtitle">Abort-on-preemption atomics for userspace per-CPU data — without locks or lock-prefixed instructions</p>
+<p class="meta">September 30, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>
+The kernel can disable preemption while it touches per-CPU data. Userspace cannot. Any thread can be preempted or migrated between reading its CPU number and updating that CPU&rsquo;s freelist — so the usual fix is a heavyweight atomic (lock-prefixed <code>cmpxchg</code> on x86, LL/SC elsewhere). <em>Restartable sequences</em> flip the problem: instead of preventing interruption, detect it and restart.
+</p>
+<p>
+A thread registers a shared <code>struct rseq</code> with the <code>rseq()</code> syscall (Linux 4.18+). Before a short assembly critical section, it points <code>rseq_cs</code> at a descriptor naming <code>start_ip</code>, length, and <code>abort_ip</code>. If the kernel preempts, migrates, or delivers a signal while the instruction pointer is inside that range — <em>before</em> the final commit store — it redirects execution to the abort handler. Complete the commit and the update is atomic w.r.t. other threads on that CPU and nested signal handlers. Proposed by Paul Turner and Andrew Hunter, driven upstream by Mathieu Desnoyers, and registered automatically by glibc since 2.35.
+</p>
+
+<h2>Deeper Dive</h2>
+
+<h3>Two rules that make it work</h3>
+<p>
+An rseq critical section follows a preparation / commit pattern. First: make no changes visible to other threads until the <em>last</em> instruction (typically a single store that publishes a pointer or pops a freelist head). Second: if anything interrupts before that commit, discard the partial work and restart from the top. The kernel does not roll back memory — userspace must tolerate aborts by keeping intermediate state private (registers, stack temps) until the commit store.
+</p>
+<p>
+Critical sections are tiny, written in assembly, and must not issue syscalls. Nesting is unsupported: one active <code>rseq_cs</code> per thread. On abort the kernel clears <code>rseq_cs</code>; you must re-arm it before retrying. The abort handler begins with an architecture-specific <code>RSEQ_SIG</code> sentinel so a stray jump cannot land in the middle of recovery code.
+</p>
+
+<div class="diagram-container">
+<h4>rseq critical section: commit or abort</h4>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" width="720" height="320" role="img" aria-label="Restartable sequence flow: arm, run, commit or abort">
+  <rect x="20" y="20" width="160" height="80" rx="10" fill="#1a1d27" stroke="#6c8cff" stroke-width="2"/>
+  <text x="100" y="48" text-anchor="middle" fill="#6c8cff" font-family="Inter,sans-serif" font-size="13" font-weight="600">1. Arm</text>
+  <text x="100" y="70" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">store rseq_cs</text>
+  <text x="100" y="88" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">into __rseq_abi</text>
+
+  <rect x="220" y="20" width="160" height="80" rx="10" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="300" y="48" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="13" font-weight="600">2. Prepare</text>
+  <text x="300" y="70" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">read cpu_id</text>
+  <text x="300" y="88" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">load per-CPU slot</text>
+
+  <rect x="420" y="20" width="160" height="80" rx="10" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="500" y="48" text-anchor="middle" fill="#ffd93d" font-family="Inter,sans-serif" font-size="13" font-weight="600">3. Commit</text>
+  <text x="500" y="70" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">single store</text>
+  <text x="500" y="88" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">publish result</text>
+
+  <rect x="580" y="140" width="120" height="70" rx="10" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="640" y="170" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="12" font-weight="600">Done</text>
+  <text x="640" y="190" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">atomic w.r.t.</text>
+  <text x="640" y="205" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">same-CPU peers</text>
+
+  <rect x="220" y="140" width="200" height="70" rx="10" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="320" y="168" text-anchor="middle" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="12" font-weight="600">Preempt / migrate / signal</text>
+  <text x="320" y="190" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">kernel jumps to abort_ip</text>
+  <text x="320" y="205" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">clears rseq_cs · retry</text>
+
+  <path d="M180 60 L215 60" stroke="#6c8cff" stroke-width="2" marker-end="url(#r1)"/>
+  <path d="M380 60 L415 60" stroke="#4ecdc4" stroke-width="2" marker-end="url(#r2)"/>
+  <path d="M580 60 L640 60 L640 135" stroke="#ffd93d" stroke-width="2" fill="none" marker-end="url(#r3)"/>
+  <path d="M300 100 L300 135" stroke="#ff6b9d" stroke-width="2" marker-end="url(#r4)"/>
+  <path d="M220 175 L100 175 L100 105" stroke="#ff6b9d" stroke-width="2" fill="none" stroke-dasharray="4 3" marker-end="url(#r5)"/>
+  <text x="150" y="155" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="11">restart</text>
+
+  <rect x="40" y="240" width="640" height="60" rx="10" fill="#232733" stroke="#2e3345" stroke-width="1"/>
+  <text x="360" y="265" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="13" font-weight="600">No visible side effects until the final commit store</text>
+  <text x="360" y="285" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Kernel detects IP in [start_ip, start_ip+post_commit_offset) and redirects</text>
+
+  <defs>
+    <marker id="r1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+    <marker id="r2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#4ecdc4"/></marker>
+    <marker id="r3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ffd93d"/></marker>
+    <marker id="r4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ff6b9d"/></marker>
+    <marker id="r5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ff6b9d"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>The ABI: <code>struct rseq</code> and <code>struct rseq_cs</code></h3>
+<p>
+Registration is one syscall: <code>rseq(struct rseq *rseq, uint32_t rseq_len, int flags, uint32_t sig)</code>. Only one registration per thread — checking more in the scheduler hot path would be too expensive. The per-thread object (glibc exposes it via the thread pointer and <code>__rseq_offset</code> / <code>__rseq_size</code>) holds:
+</p>
+<p>
+<code>cpu_id_start</code> / <code>cpu_id</code> — kernel-updated CPU number (fast <code>sched_getcpu</code> without a syscall); <code>rseq_cs</code> — pointer to the active critical-section descriptor (or NULL); <code>node_id</code> — NUMA node; <code>mm_cid</code> — concurrency ID within the mm, dense when a process runs on few CPUs. The descriptor itself carries <code>start_ip</code>, <code>post_commit_offset</code>, and <code>abort_ip</code>.
+</p>
+
+<div class="callout">
+<strong>One ABI, many libraries:</strong> Because only one <code>struct rseq</code> exists per thread, glibc (2.35+) owns registration and libraries share it. Each library arms its own <code>struct rseq_cs</code> for its short asm block. Overwriting read-only ID fields breaks co-existence — Optimized RSEQ V2 enforces that and kills violators with <code>SIGSEGV</code>.
+</div>
+
+<h3>glibc, librseq, and Optimized V2</h3>
+<p>
+Since glibc 2.35, every new thread gets an rseq registration in the TCB. Applications include <code>sys/rseq.h</code>, check <code>__rseq_size</code> (zero if unavailable), and point <code>rseq_cs</code> at their descriptor. Mathieu Desnoyers&rsquo; <a href="https://git.kernel.org/pub/scm/libs/librseq/librseq.git/">librseq</a> provides portable inline asm helpers for common per-CPU patterns and a registration API for older libcs that coexists with glibc 2.35+. The tunable <code>glibc.pthread.rseq</code> can disable automatic registration when a process must own the ABI itself.
+</p>
+<p>
+Recent kernels advertise Optimized RSEQ V2 via <code>getauxval(AT_RSEQ_FEATURE_SIZE)</code>: ID fields update only on migration, critical-section checks run only when the thread was actually interrupted, and optional <em>scheduler time-slice extensions</em> let a thread ask for a few extra microseconds to finish a critical section (<code>prctl(PR_RSEQ_SLICE_EXTENSION, …)</code>, then <code>rseq_slice_yield</code>). Legacy 32-byte registrations keep the older unconditional-update behavior for ABI compatibility — documented in the <a href="https://docs.kernel.org/userspace-api/rseq.html">kernel rseq UAPI docs</a>.
+</p>
+
+<div class="diagram-container">
+<h4>Who owns __rseq_abi in a process</h4>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 260" width="720" height="260" role="img" aria-label="glibc owns struct rseq; libraries share via rseq_cs">
+  <rect x="40" y="30" width="200" height="100" rx="10" fill="#1a1d27" stroke="#6c8cff" stroke-width="2"/>
+  <text x="140" y="60" text-anchor="middle" fill="#6c8cff" font-family="Inter,sans-serif" font-size="13" font-weight="600">glibc (TCB)</text>
+  <text x="140" y="82" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">registers struct rseq</text>
+  <text x="140" y="100" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">__rseq_offset / size</text>
+
+  <rect x="280" y="30" width="180" height="100" rx="10" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="370" y="60" text-anchor="middle" fill="#4ecdc4" font-family="Inter,sans-serif" font-size="13" font-weight="600">Kernel</text>
+  <text x="370" y="82" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="11">updates cpu_id</text>
+  <text x="370" y="100" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="11">aborts on preempt</text>
+
+  <rect x="500" y="20" width="180" height="50" rx="8" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="590" y="50" text-anchor="middle" fill="#ff6b9d" font-family="Inter,sans-serif" font-size="12" font-weight="600">malloc / TCMalloc</text>
+  <rect x="500" y="80" width="180" height="50" rx="8" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="590" y="110" text-anchor="middle" fill="#ffd93d" font-family="Inter,sans-serif" font-size="12" font-weight="600">librseq / tracer</text>
+
+  <path d="M240 80 L275 80" stroke="#6c8cff" stroke-width="2" marker-end="url(#s1)"/>
+  <path d="M460 80 L495 45" stroke="#ff6b9d" stroke-width="2" marker-end="url(#s2)"/>
+  <path d="M460 80 L495 105" stroke="#ffd93d" stroke-width="2" marker-end="url(#s3)"/>
+
+  <rect x="80" y="160" width="560" height="70" rx="10" fill="#1a1d27" stroke="#2e3345" stroke-width="1"/>
+  <text x="360" y="190" text-anchor="middle" fill="#e1e4ed" font-family="Inter,sans-serif" font-size="13" font-weight="600">Libraries arm their own rseq_cs — never re-register</text>
+  <text x="360" y="212" text-anchor="middle" fill="#8b90a0" font-family="Inter,sans-serif" font-size="12">Critical sections do not nest and must not call into other rseq users</text>
+
+  <defs>
+    <marker id="s1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6c8cff"/></marker>
+    <marker id="s2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ff6b9d"/></marker>
+    <marker id="s3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ffd93d"/></marker>
+  </defs>
+</svg>
+</div>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color: var(--accent4);">rseq per-CPU update</h4>
+    <ul>
+      <li>Plain loads/stores in the fast path</li>
+      <li>Abort + retry on preempt/migrate</li>
+      <li>Best for short, CPU-local ops</li>
+      <li>Asm critical sections; no syscalls</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color: var(--accent2);">Atomics / locks</h4>
+    <ul>
+      <li>Lock-prefixed or LL/SC every update</li>
+      <li>Correct across migration by design</li>
+      <li>Higher cost on contended hot paths</li>
+      <li>Easier to write in C; nestable locks</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">Allocator freelists</div>
+    <div class="desc">Per-CPU free-lists in jemalloc, TCMalloc, and glibc malloc: pop/push without atomics when the thread stays on the CPU — the original production motivation for merging rseq.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Fast getcpu</div>
+    <div class="desc">Reading <code>cpu_id</code> from the registered ABI replaces <code>sched_getcpu</code> syscalls / vDSO round-trips for indexing per-CPU arrays.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Ring buffers &amp; tracers</div>
+    <div class="desc">LTTng-UST and similar tracers write per-CPU ring buffers; rseq keeps the producer path CPU-local without expensive atomics on every event.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Userspace RCU / counters</div>
+    <div class="desc">Per-CPU grace-period tracking, counters, and linked-list ops that only need atomicity vs other threads on the same CPU — not a global total order.</div>
+  </div>
+</div>
+
+<div class="callout">
+<strong>When not to use rseq:</strong> Long critical sections (aborts become frequent), anything that needs a syscall, or updates that must be atomic across CPUs. Cross-CPU publication still wants ordinary atomics, mutexes, or RCU. rseq is the userspace analogue of kernel percpu ops — not a replacement for shared-memory synchronization between cores.
+</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/userspace-api/rseq.html">Restartable Sequences — The Linux Kernel documentation</a> (UAPI, Optimized V2, time-slice extensions)</li>
+  <li><a href="https://lwn.net/Articles/1033957/">rseq(2) manual page</a> — syscall ABI, <code>struct rseq</code> / <code>struct rseq_cs</code> fields (from librseq; LWN formatted copy)</li>
+  <li><a href="https://lwn.net/Articles/883104/">Jonathan Corbet, &ldquo;Restartable sequences in glibc,&rdquo; LWN.net, Jan 2022</a> — glibc 2.35 registration and sharing model</li>
+  <li><a href="https://sourceware.org/glibc/manual/latest/html_node/Restartable-Sequences.html">Restartable Sequences — The GNU C Library Manual</a> — <code>__rseq_offset</code>, <code>__rseq_size</code>, library obligations</li>
+  <li><a href="https://www.efficios.com/blog/2019/02/08/linux-restartable-sequences/">Mathieu Desnoyers, &ldquo;The 5-year journey to bring restartable sequences to Linux,&rdquo; EfficiOS, 2019</a> — history from Turner/Hunter to 4.18</li>
+  <li><a href="https://git.kernel.org/pub/scm/libs/librseq/librseq.git/">librseq</a> — portable helpers and man-page sources</li>
+  <li><a href="https://lwn.net/Articles/1070072/">Jonathan Corbet, &ldquo;Restartable sequences, TCMalloc, and Hyrum&rsquo;s Law,&rdquo; LWN.net</a> — ABI compliance vs Optimized V2</li>
+</ol>
+</div>
+</body>
+</html>

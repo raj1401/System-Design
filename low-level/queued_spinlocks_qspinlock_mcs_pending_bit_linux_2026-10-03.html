@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="How Linux qspinlocks pack MCS-style local spinning into a 32-bit lock word with a pending bit and per-CPU nested nodes so spinlock_t stays small under heavy contention.">
+<title>Queued Spinlocks: MCS Waiting in a 32-bit Linux Lock Word</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Queued Spinlocks: MCS Waiting in a 32-bit Linux Lock Word</h1>
+<p class="subtitle">How Linux compresses fair, local-spinning MCS queues into <code>spinlock_t</code> without bloating every embedded lock</p>
+<p class="meta">October 3, 2026 &middot; 5 min read</p>
+
+<p>
+A classic test-and-set spinlock is tiny and fast when idle, but under contention every waiter hammers the same cache line. Ticket locks restore FIFO fairness, yet an unlock still invalidates every waiter’s copy of the lock word. The MCS lock of Mellor-Crummey and Scott fixes that by making each waiter spin on its own node—but a pointer-sized tail plus a node is too large for the thousands of <code>spinlock_t</code> instances embedded across the Linux kernel. <strong>Queued spinlocks (qspinlocks)</strong> keep the MCS idea while packing the entire public lock into a single 32-bit word: a locked byte, a pending bit, and a compressed tail of CPU number plus nesting index, with the real MCS nodes living in a per-CPU array.
+</p>
+
+<h2>Why naive spinning hurts</h2>
+<p>
+In a test-and-set (or test-and-test-and-set) lock, every contending CPU repeatedly loads or CAS-es the same word. On a coherent interconnect that means the lock’s cache line bounces among cores on every failed attempt and again on unlock. Ticket locks serialize acquisition order with a next/owner counter pair, but waiters still observe the shared owner field, so unlock traffic scales with the number of spinners. On large machines that coherence tax dominates short critical sections in the VFS, page cache, and scheduler paths.
+</p>
+
+<div class="callout">
+<strong>Design constraint.</strong> Linux assumes <code>spinlock_t</code> fits in four bytes and is embedded in structures that cannot grow (historically including <code>struct page</code>). Any MCS-style redesign had to preserve that size and the existing <code>spin_lock</code> / <code>spin_unlock</code> API.
+</div>
+
+<h2>MCS: local spinning via a queue of nodes</h2>
+<p>
+An MCS lock stores a tail pointer. Each waiter provides an <code>mcs_spinlock</code> node with a <code>next</code> pointer and a <code>locked</code> flag. Acquire does an atomic exchange of the tail with the address of the waiter’s node. If the previous tail was null, the lock is free. Otherwise the waiter links itself behind the predecessor and spins on <em>its own</em> <code>node-&gt;locked</code>. Unlock either clears the tail (no successor) or stores into the successor’s <code>locked</code> field—exactly one cache-line transfer to hand off, independent of queue length. Fairness is FIFO by construction.
+</p>
+<p>
+The catch: classic MCS needs a pointer-sized lock word plus a node that must travel from lock to unlock (or be looked up). That footprint and API change made a straight MCS replacement unsuitable for every kernel spinlock.
+</p>
+
+<h2>The 32-bit qspinlock word</h2>
+<p>
+Linux’s answer, merged around the 3.15 era from work by Waiman Long and Peter Zijlstra, keeps queue state off the lock object. Each CPU owns four MCS nodes—one each for task, softirq, hardirq, and NMI nesting. The public lock is only a <code>u32</code> (see <code>include/asm-generic/qspinlock_types.h</code>):
+</p>
+<ul style="margin: 0 0 16px 20px; color: var(--text-dim); font-size: 0.95em;">
+<li style="margin-bottom: 6px;"><strong style="color: var(--accent2);">Bits 0–7</strong> — locked byte (full byte so unlock is a single store-release of zero)</li>
+<li style="margin-bottom: 6px;"><strong style="color: var(--accent2);">Bits 8–15</strong> — pending byte (one bit used; full byte for cheap 16-bit ops when <code>NR_CPUS &lt; 16K</code>)</li>
+<li style="margin-bottom: 6px;"><strong style="color: var(--accent2);">Bits 16–17</strong> — tail nesting index (0..3 into the per-CPU node array)</li>
+<li style="margin-bottom: 6px;"><strong style="color: var(--accent2);">Bits 18–31</strong> — tail CPU number encoded as <code>cpu + 1</code> so zero means “no queue”</li>
+</ul>
+
+<div class="diagram-container">
+<h4>qspinlock 32-bit layout and MCS handoff</h4>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" font-family="Inter,sans-serif">
+  <!-- Lock word -->
+  <rect x="40" y="20" width="680" height="70" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="380" y="14" text-anchor="middle" fill="#8b90a0" font-size="11">arch_spinlock_t / qspinlock.val (32 bits)</text>
+  <!-- locked -->
+  <rect x="48" y="32" width="150" height="46" rx="4" fill="#6c8cff33" stroke="#6c8cff"/>
+  <text x="123" y="52" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="600">locked</text>
+  <text x="123" y="68" text-anchor="middle" fill="#8b90a0" font-size="10">bits 0–7</text>
+  <!-- pending -->
+  <rect x="210" y="32" width="150" height="46" rx="4" fill="#ffd93d33" stroke="#ffd93d"/>
+  <text x="285" y="52" text-anchor="middle" fill="#ffd93d" font-size="12" font-weight="600">pending</text>
+  <text x="285" y="68" text-anchor="middle" fill="#8b90a0" font-size="10">bits 8–15</text>
+  <!-- idx -->
+  <rect x="372" y="32" width="110" height="46" rx="4" fill="#4ecdc433" stroke="#4ecdc4"/>
+  <text x="427" y="52" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">idx</text>
+  <text x="427" y="68" text-anchor="middle" fill="#8b90a0" font-size="10">16–17</text>
+  <!-- cpu -->
+  <rect x="494" y="32" width="214" height="46" rx="4" fill="#ff6b9d33" stroke="#ff6b9d"/>
+  <text x="601" y="52" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">tail CPU (+1)</text>
+  <text x="601" y="68" text-anchor="middle" fill="#8b90a0" font-size="10">bits 18–31</text>
+
+  <!-- Per-CPU nodes -->
+  <text x="380" y="120" text-anchor="middle" fill="#8b90a0" font-size="11">Per-CPU qnodes[4]: task · softirq · hardirq · NMI</text>
+
+  <!-- CPU A node (holder / head) -->
+  <rect x="60" y="140" width="160" height="90" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="140" y="162" text-anchor="middle" fill="#6c8cff" font-size="12" font-weight="600">CPU A · idx 0</text>
+  <text x="140" y="182" text-anchor="middle" fill="#e1e4ed" font-size="11">locked = 1 (owner)</text>
+  <text x="140" y="202" text-anchor="middle" fill="#8b90a0" font-size="10">next → CPU B</text>
+  <text x="140" y="218" text-anchor="middle" fill="#8b90a0" font-size="10">spins on lock word</text>
+
+  <!-- arrow A to B -->
+  <path d="M220 185 L280 185" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- CPU B node -->
+  <rect x="290" y="140" width="160" height="90" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="370" y="162" text-anchor="middle" fill="#4ecdc4" font-size="12" font-weight="600">CPU B · idx 0</text>
+  <text x="370" y="182" text-anchor="middle" fill="#e1e4ed" font-size="11">locked = 0 (wait)</text>
+  <text x="370" y="202" text-anchor="middle" fill="#8b90a0" font-size="10">next → CPU C</text>
+  <text x="370" y="218" text-anchor="middle" fill="#8b90a0" font-size="10">local spin</text>
+
+  <!-- arrow B to C -->
+  <path d="M450 185 L510 185" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- CPU C node (tail) -->
+  <rect x="520" y="140" width="160" height="90" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="600" y="162" text-anchor="middle" fill="#ff6b9d" font-size="12" font-weight="600">CPU C · idx 0</text>
+  <text x="600" y="182" text-anchor="middle" fill="#e1e4ed" font-size="11">locked = 0 (wait)</text>
+  <text x="600" y="202" text-anchor="middle" fill="#8b90a0" font-size="10">next = NULL</text>
+  <text x="600" y="218" text-anchor="middle" fill="#8b90a0" font-size="10">tail in lock word</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#4ecdc4"/>
+    </marker>
+  </defs>
+
+  <!-- Paths legend -->
+  <rect x="40" y="260" width="680" height="140" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="60" y="288" fill="#e1e4ed" font-size="13" font-weight="600">Acquire paths</text>
+  <circle cx="70" cy="318" r="6" fill="#6c8cff"/>
+  <text x="86" y="322" fill="#8b90a0" font-size="12"><tspan fill="#6c8cff" font-weight="600">Fast:</tspan> CAS 0 → locked; uncontended return</text>
+  <circle cx="70" cy="348" r="6" fill="#ffd93d"/>
+  <text x="86" y="352" fill="#8b90a0" font-size="12"><tspan fill="#ffd93d" font-weight="600">Pending:</tspan> single waiter sets pending, spins on locked byte</text>
+  <circle cx="70" cy="378" r="6" fill="#ff6b9d"/>
+  <text x="86" y="382" fill="#8b90a0" font-size="12"><tspan fill="#ff6b9d" font-weight="600">Slow:</tspan> encode tail, link MCS nodes, local spin, then claim lock word</text>
+</svg>
+</div>
+
+<h2>Three paths to ownership</h2>
+
+<h3>Fast path</h3>
+<p>
+<code>queued_spin_lock</code> in <code>asm-generic/qspinlock.h</code> tries a single acquire CAS of the lock word from 0 to <code>_Q_LOCKED_VAL</code>. That is the uncontended case—and the common case. Unlock is deliberately a byte store-release of zero to <code>lock-&gt;locked</code>, cheaper than the read-modify-write ticket unlock required.
+</p>
+
+<h3>Pending optimization</h3>
+<p>
+If the lock is held but no one else is waiting, the slowpath sets the pending bit instead of joining an MCS queue. That lone waiter spins on the locked byte of the lock word. When the owner releases, the pending waiter clears pending and sets locked in one transition (<code>clear_pending_set_locked</code>). A second contender seeing pending (or any non-locked bits) falls through to the full queue. This avoids touching a (possibly cold) per-CPU MCS node for the common “exactly one waiter” pattern.
+</p>
+
+<h3>Slow path: MCS queue</h3>
+<p>
+<code>queued_spin_lock_slowpath</code> claims a nesting slot via <code>node-&gt;count</code>, encodes <code>tail = (cpu+1) | idx</code>, and <code>xchg_tail</code>s it into the lock word. If a previous tail existed, it publishes <code>prev-&gt;next = node</code> and spins on <code>node-&gt;locked</code> until promoted to queue head. The head then waits until both locked and pending are clear, claims the lock (clearing the tail if it is still the sole waiter, otherwise only setting locked), and unlocks its successor by writing <code>next-&gt;locked</code>. Nested IRQ/NMI acquisitions use additional slots in the same per-CPU array of four nodes.
+</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color: var(--accent3);">Test-and-set / ticket</h4>
+    <ul>
+      <li>All waiters observe one shared word</li>
+      <li>Unlock coherence traffic grows with N waiters</li>
+      <li>Ticket is fair; TAS is not</li>
+      <li>Fits in 32 bits; simple unlock</li>
+      <li>Scales poorly on large SMP</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color: var(--accent2);">MCS / qspinlock</h4>
+    <ul>
+      <li>Waiters spin on private nodes (local cache lines)</li>
+      <li>Handoff is O(1) remote write to successor</li>
+      <li>FIFO fairness preserved</li>
+      <li>qspinlock: 32-bit word + per-CPU nodes</li>
+      <li>Pending path skips queue for one waiter</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Fairness and where it shows up</h2>
+<p>
+Like ticket locks, qspinlocks hand off in arrival order once waiters are queued, so a core cannot indefinitely steal under heavy contention the way unfair TAS can. Versus tickets, the big win is scalability: queue members do not bounce the lock word until they reach the head (or take the pending shortcut). Architectures that select qspinlock remap <code>arch_spin_*</code> to the queued helpers, so <code>spin_lock</code> across x86, arm64, and other supported arches is qspinlock underneath—protecting softirq lists, runqueues, inode/page locks, and countless short critical sections that must not sleep.
+</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">arch_spinlock_t</div>
+    <div class="desc">Default architecture spinlock on x86, arm64, and other qspinlock adopters; every <code>spin_lock()</code> goes through this word.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">IRQ / softirq nesting</div>
+    <div class="desc">Four per-CPU MCS nodes keep task, softirq, hardirq, and NMI acquisitions from sharing one waiter node.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Hot VFS / FS paths</div>
+    <div class="desc">LWN’s original AIM7 numbers showed large gains on contended filesystem workloads where ticket unlock bounced many waiters.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Paravirt spinlocks</div>
+    <div class="desc">PV qspinlock variants add kick/wait hooks so overcommitted guests can halt instead of burning host cycles while queued.</div>
+  </div>
+</div>
+
+<p>
+qspinlock is not a cure for lock <em>contention</em>—long hold times still serialize work. It is an optimization of the waiting protocol so that when many cores do collide, coherence traffic stays bounded and the lock object itself stays four bytes.
+</p>
+
+<div class="sources">
+  <h2>Sources</h2>
+  <ol>
+    <li>Jonathan Corbet, <a href="https://lwn.net/Articles/590243/">MCS locks and qspinlocks</a>, LWN.net, March 2014.</li>
+    <li>Linux kernel, <a href="https://github.com/torvalds/linux/blob/master/kernel/locking/qspinlock.c">kernel/locking/qspinlock.c</a> (queued slowpath, pending, MCS handoff).</li>
+    <li>Linux kernel, <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock.h">include/asm-generic/qspinlock.h</a> (fast-path lock/unlock).</li>
+    <li>Linux kernel, <a href="https://github.com/torvalds/linux/blob/master/include/asm-generic/qspinlock_types.h">include/asm-generic/qspinlock_types.h</a> (32-bit field layout).</li>
+    <li>John M. Mellor-Crummey and Michael L. Scott, <a href="https://www.cs.rochester.edu/u/scott/papers/1991_TOCS_synch.pdf">Algorithms for Scalable Synchronization on Shared-Memory Multiprocessors</a>, ACM TOCS, 1991 (MCS lock).</li>
+    <li>MCS paper copy referenced from kernel comments: <a href="https://bugzilla.kernel.org/show_bug.cgi?id=206115">bugzilla.kernel.org #206115</a>.</li>
+    <li>RDMSR, <a href="https://rdmsr.github.io/writing/qspinlocks/">Linux qspinlocks</a> (walkthrough and userspace C++ sketch).</li>
+    <li>University of Rochester, <a href="https://www.cs.rochester.edu/research/synchronization/pseudocode/ss.html">Scalable Synchronization pseudocode</a> (MCS list-based queue lock).</li>
+  </ol>
+</div>
+</body>
+</html>

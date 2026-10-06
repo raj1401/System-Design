@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The vDSO: System Calls Without Entering the Kernel</title>
+<meta name="description" content="How the Linux vDSO maps kernel-authored code and a read-only vvar data page into every process so clock_gettime, getcpu and now getrandom run as plain function calls, using a seqcount retry loop and falling back to a real syscall when it must.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>The vDSO: System Calls Without Entering the Kernel</h1>
+<p class="subtitle">A tiny shared library the kernel writes for you, so asking “what time is it?” costs a function call instead of a ring transition.</p>
+<p class="meta">October 6, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>Some system calls are called so often, and do so little, that the cost of entering the kernel dominates the work. <code>clock_gettime()</code> is the classic case: databases, tracers and loggers call it millions of times a second just to read a number the kernel already knows. The <strong>vDSO</strong> (virtual dynamic shared object) is Linux's answer. At <code>execve()</code> the kernel maps a small ELF shared library into every process, plus a read-only data page called <code>[vvar]</code> that the kernel keeps up to date. The C library finds the vDSO and calls its functions directly, so the common path never executes a <code>syscall</code> instruction at all (<a href="https://www.man7.org/linux/man-pages/man7/vdso.7.html">vdso(7)</a>).</p>
+
+<div class="callout"><strong>Why it is safe:</strong> the vDSO never gets privilege. It only reads memory the kernel deliberately shares (read-only) and executes unprivileged instructions like <code>rdtsc</code>. Anything it can't answer from that shared state, it hands to the real syscall.</div>
+
+<h2>How it works</h2>
+<h3>Finding the library</h3>
+<p>The kernel passes the vDSO's base address to each program in the ELF auxiliary vector under <code>AT_SYSINFO_EHDR</code>, readable with <a href="https://man7.org/linux/man-pages/man3/getauxval.3.html">getauxval(3)</a>. Its location is randomized by ASLR, and it shows up in <code>/proc/self/maps</code> as <code>[vdso]</code> next to <code>[vvar]</code> (<a href="https://kernel-internals.org/syscalls/vdso/">Kernel Internals: vDSO</a>). glibc parses its dynamic symbol table at startup; on x86-64 it exports <code>__vdso_clock_gettime</code>, <code>__vdso_gettimeofday</code>, <code>__vdso_time</code> and <code>__vdso_getcpu</code> with version <code>LINUX_2.6</code> (<a href="https://www.man7.org/linux/man-pages/man7/vdso.7.html">vdso(7)</a>). Programs without glibc can do the same lookup; the kernel ships a reference parser in <a href="https://github.com/torvalds/linux/blob/master/tools/testing/selftests/vDSO/parse_vdso.c">tools/testing/selftests/vDSO/parse_vdso.c</a>.</p>
+
+<div class="diagram-container">
+<h4>Two paths to the current time</h4>
+<svg width="760" height="330" viewBox="0 0 760 330" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4ecdc4"/></marker>
+    <marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+  </defs>
+  <rect x="10" y="10" width="740" height="180" rx="10" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="24" y="32" fill="#8b90a0" font-size="12">USER SPACE (ring 3)</text>
+  <rect x="30" y="50" width="150" height="54" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="105" y="74" fill="#e1e4ed" font-size="13" text-anchor="middle">app</text>
+  <text x="105" y="92" fill="#8b90a0" font-size="11" text-anchor="middle">clock_gettime()</text>
+  <rect x="230" y="50" width="150" height="54" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="305" y="74" fill="#e1e4ed" font-size="13" text-anchor="middle">glibc</text>
+  <text x="305" y="92" fill="#8b90a0" font-size="11" text-anchor="middle">resolved at startup</text>
+  <rect x="430" y="40" width="150" height="74" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="505" y="64" fill="#4ecdc4" font-size="13" text-anchor="middle">[vdso] code</text>
+  <text x="505" y="82" fill="#8b90a0" font-size="11" text-anchor="middle">r-x, kernel-built ELF</text>
+  <text x="505" y="99" fill="#8b90a0" font-size="11" text-anchor="middle">rdtsc + math</text>
+  <rect x="610" y="40" width="125" height="74" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="672" y="64" fill="#ffd93d" font-size="13" text-anchor="middle">[vvar] data</text>
+  <text x="672" y="82" fill="#8b90a0" font-size="11" text-anchor="middle">read-only to user</text>
+  <text x="672" y="99" fill="#8b90a0" font-size="11" text-anchor="middle">seq, mult, shift…</text>
+  <line x1="180" y1="77" x2="226" y2="77" stroke="#8b90a0" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="380" y1="77" x2="426" y2="77" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <line x1="580" y1="77" x2="606" y2="77" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="505" y="140" fill="#4ecdc4" font-size="12" text-anchor="middle">fast path: plain loads, no mode switch</text>
+  <line x1="505" y1="114" x2="505" y2="226" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#a3)"/>
+  <text x="515" y="172" fill="#ff6b9d" font-size="11">fallback: syscall</text>
+  <text x="515" y="186" fill="#ff6b9d" font-size="11">(clock_mode NONE, CPU-time clocks)</text>
+  <rect x="10" y="205" width="740" height="115" rx="10" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="24" y="227" fill="#8b90a0" font-size="12">KERNEL (ring 0)</text>
+  <rect x="430" y="232" width="150" height="54" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="505" y="256" fill="#e1e4ed" font-size="13" text-anchor="middle">sys_clock_gettime</text>
+  <text x="505" y="274" fill="#8b90a0" font-size="11" text-anchor="middle">entry, mitigations, exit</text>
+  <rect x="610" y="232" width="125" height="54" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="672" y="256" fill="#e1e4ed" font-size="13" text-anchor="middle">timekeeping</text>
+  <text x="672" y="274" fill="#8b90a0" font-size="11" text-anchor="middle">updates on tick</text>
+  <line x1="672" y1="232" x2="672" y2="118" stroke="#ffd93d" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="680" y="200" fill="#ffd93d" font-size="11">writes</text>
+  <text x="30" y="300" fill="#8b90a0" font-size="11">Same physical vvar page is writable in the kernel mapping, read-only in every process.</text>
+</svg>
+</div>
+
+<h3>The data page and the seqcount</h3>
+<p>The interesting part isn't the code, it's the coordination. The kernel's timekeeping core updates the vvar page whenever it advances its notion of time; in current kernels the layout is <code>struct vdso_time_data</code>, holding an array of per-clocksource <code>struct vdso_clock</code> records (<a href="https://github.com/torvalds/linux/blob/master/include/vdso/datapage.h">include/vdso/datapage.h</a>). Userspace can't take a lock the kernel would respect, so the vDSO uses a <strong>sequence counter</strong>: the writer makes <code>seq</code> odd, updates the fields, then makes it even again. The reader in <a href="https://github.com/torvalds/linux/blob/master/lib/vdso/gettimeofday.c">lib/vdso/gettimeofday.c</a> spins while <code>seq</code> is odd, issues <code>smp_rmb()</code>, reads the hardware counter and the base values, and retries if <code>seq</code> changed underneath it. It's the same idea as the kernel's seqlocks, applied across the user/kernel boundary.</p>
+<p>Inside the loop the conversion is fixed-point arithmetic precomputed by the kernel: <code>ns = ((cycles - cycle_last) * mult + base) &gt;&gt; shift</code>. On x86 the helper also filters out “negative motion,” because TSCs on different sockets can be slightly off, and an unsigned subtraction would otherwise produce an enormous jump forward (<a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/vdso/gettimeofday.h">arch/x86/include/asm/vdso/gettimeofday.h</a>).</p>
+
+<div class="diagram-container">
+<h4>Seqcount retry across the user/kernel boundary</h4>
+<svg width="760" height="230" viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <text x="20" y="44" fill="#ffd93d" font-size="12">kernel tick</text>
+  <text x="20" y="144" fill="#4ecdc4" font-size="12">vDSO reader</text>
+  <line x1="110" y1="40" x2="740" y2="40" stroke="#2e3345" stroke-width="2"/>
+  <line x1="110" y1="140" x2="740" y2="140" stroke="#2e3345" stroke-width="2"/>
+  <rect x="300" y="24" width="170" height="32" rx="6" fill="#232733" stroke="#ffd93d"/>
+  <text x="385" y="45" fill="#e1e4ed" font-size="12" text-anchor="middle">seq=7 (odd): update fields</text>
+  <text x="290" y="72" fill="#8b90a0" font-size="11" text-anchor="end">seq 6 → 7</text>
+  <text x="480" y="72" fill="#8b90a0" font-size="11">seq 7 → 8</text>
+  <rect x="130" y="122" width="250" height="36" rx="6" fill="#232733" stroke="#ff6b9d"/>
+  <text x="255" y="138" fill="#e1e4ed" font-size="12" text-anchor="middle">attempt 1: saw seq=6, read rdtsc + base</text>
+  <text x="255" y="152" fill="#ff6b9d" font-size="11" text-anchor="middle">recheck: seq=7 ≠ 6, retry</text>
+  <rect x="400" y="122" width="70" height="36" rx="6" fill="#232733" stroke="#8b90a0"/>
+  <text x="435" y="144" fill="#8b90a0" font-size="11" text-anchor="middle">odd: spin</text>
+  <rect x="490" y="122" width="240" height="36" rx="6" fill="#232733" stroke="#4ecdc4"/>
+  <text x="610" y="138" fill="#e1e4ed" font-size="12" text-anchor="middle">attempt 2: seq=8, read, recheck 8</text>
+  <text x="610" y="152" fill="#4ecdc4" font-size="11" text-anchor="middle">consistent, return timespec</text>
+  <line x1="300" y1="56" x2="300" y2="118" stroke="#ffd93d" stroke-dasharray="4,4"/>
+  <line x1="470" y1="56" x2="470" y2="118" stroke="#ffd93d" stroke-dasharray="4,4"/>
+  <text x="380" y="200" fill="#8b90a0" font-size="11" text-anchor="middle">The writer never waits for readers; readers pay only a rare retry. No atomics, no shared-cache-line writes on the read side.</text>
+</svg>
+</div>
+
+<h3>When the vDSO says no</h3>
+<p>The fast path only works when the current clocksource can be read from ring 3. If it can't, the kernel marks the clock <code>VDSO_CLOCKMODE_NONE</code> and the vDSO issues the real syscall itself through an arch-specific fallback (<code>VDSO_SYSCALL2</code> on x86-64). The same happens for clock IDs the vDSO doesn't handle, such as per-process CPU-time clocks; as <a href="https://berthub.eu/articles/posts/on-linux-vdso-and-clockgettime/">Bert Hubert found</a>, glibc “always” calls the vDSO, but the vDSO may quietly make a syscall on your behalf.</p>
+<p>Time namespaces reuse the same trick. A task inside a <a href="https://man7.org/linux/man-pages/man7/time_namespaces.7.html">time namespace</a> gets a special vvar page whose <code>seq</code> is permanently odd and whose <code>clock_mode</code> is <code>VDSO_CLOCKMODE_TIMENS</code>; the reader notices while it would otherwise spin and takes a path that adds the namespace's offsets. Tasks outside a namespace pay nothing extra (<a href="https://github.com/torvalds/linux/blob/master/lib/vdso/gettimeofday.c">lib/vdso/gettimeofday.c</a>).</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">Legacy vsyscall page</h4>
+    <ul>
+      <li>Fixed address <code>0xffffffffff600000</code>, same in every process</li>
+      <li>A gift to exploits that need known code addresses (<a href="https://lwn.net/Articles/446528/">LWN</a>)</li>
+      <li>Now trap-and-emulate; default <code>vsyscall=xonly</code> makes it unreadable (<a href="https://lwn.net/Articles/792198/">LWN</a>)</li>
+      <li>Recent LASS patches emulate it from the #GP handler (<a href="https://www.spinics.net/lists/kernel/msg6109011.html">tip</a>)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">vDSO</h4>
+    <ul>
+      <li>Real ELF library, ASLR-randomized</li>
+      <li>Symbol-versioned, discovered via <code>AT_SYSINFO_EHDR</code></li>
+      <li>Kernel can add functions without breaking old binaries</li>
+      <li>Falls back to the syscall when it can't answer</li>
+    </ul>
+  </div>
+</div>
+
+<h3>The newest resident: getrandom()</h3>
+<p>Linux 6.11 added <code>vgetrandom()</code>, by Jason Donenfeld, so cryptographically secure random bytes no longer need a syscall per call (<a href="https://lkml.org/lkml/2024/7/14/216">6.11 pull request</a>). Unlike time, randomness needs per-thread state that must never be duplicated. The caller first asks the vDSO how big that state is and which <code>mmap()</code> flags to use, then allocates it with the new <code>MAP_DROPPABLE</code> flag, which lets the kernel reclaim and zero it under memory pressure; the area is also wiped on fork so parent and child never emit the same stream (<a href="https://lwn.net/Articles/983186/">LWN</a>, <a href="https://lwn.net/Articles/980447/">LWN</a>). A generation counter in the vvar data tells the vDSO when the kernel has reseeded, and the implementation in <a href="https://github.com/torvalds/linux/blob/master/lib/vdso/getrandom.c">lib/vdso/getrandom.c</a> follows random.c's fast key erasure design. glibc 2.41 picked it up for x86-64 on 6.11 and several other architectures on 6.12, falling back to the syscall on reentrancy or allocation failure (<a href="https://sourceware.org/pipermail/glibc-cvs/2024q4/086626.html">glibc commit</a>, <a href="https://sourceware.org/pipermail/libc-announce/2025/000045.html">2.41 release notes</a>).</p>
+
+<div class="callout"><strong>Debugging tip:</strong> successful vDSO calls never appear in <code>strace</code>. If you see a flood of <code>clock_gettime</code> lines, that's your sign the fast path is being skipped.</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Timestamps at scale</div><div class="desc">Databases, tracers and loggers read the clock per operation. The vDSO turns that from a kernel entry into a few loads and an <code>rdtsc</code>.</div></div>
+  <div class="use-case"><div class="label">The EC2 clocksource trap</div><div class="desc">Xen's <code>xen</code> clocksource couldn't be read from userspace, so timing calls fell back to syscalls; Packagecloud measured them about 77% slower (<a href="https://blog.packagecloud.io/system-calls-are-much-slower-on-ec2/">Packagecloud</a>), and Heap credited switching to <code>tsc</code> as part of a 30% p95 query improvement (<a href="https://www.heap.io/blog/running-a-database-on-ec2-your-clock-could-be-slowing-you-down">Heap</a>). A later patch prefers <code>tsc</code> on Xen when it's provably safe (<a href="https://lists.xenproject.org/archives/html/xen-devel/2022-12/msg01292.html">xen-devel</a>).</div></div>
+  <div class="use-case"><div class="label">Per-CPU sharding</div><div class="desc"><code>__vdso_getcpu</code> lets allocators and counters pick a per-CPU shard cheaply, without a syscall.</div></div>
+  <div class="use-case"><div class="label">Fast secure randomness</div><div class="desc">UUID generation, TLS nonces and hash-table seeding get kernel-quality random bytes through <code>vgetrandom()</code> instead of userspace CSPRNGs that can go wrong across fork.</div></div>
+  <div class="use-case"><div class="label">Containers with shifted clocks</div><div class="desc">Time namespaces give a container its own <code>CLOCK_MONOTONIC</code> and <code>CLOCK_BOOTTIME</code> offsets while staying on the vDSO fast path.</div></div>
+  <div class="use-case"><div class="label">Hardening legacy binaries</div><div class="desc">Ancient static binaries that still jump to the vsyscall page keep working through emulation, while modern code gets a randomized, unreadable-by-default layout.</div></div>
+</div>
+
+<h2>Design takeaways</h2>
+<p>The vDSO is a pattern, not just a Linux feature: when a privileged component owns data that is read far more often than it changes, publish a read-only snapshot and let readers validate it with a version counter. Keep the escape hatch (the syscall) so correctness never depends on the fast path. And make the contract an ELF symbol table rather than a fixed address, so the kernel can grow the interface, as it did with <code>getrandom()</code>, without breaking anything already running.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://www.man7.org/linux/man-pages/man7/vdso.7.html">vdso(7), Linux manual page</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man3/getauxval.3.html">getauxval(3), Linux manual page</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man7/time_namespaces.7.html">time_namespaces(7), Linux manual page</a></li>
+  <li><a href="https://kernel-internals.org/syscalls/vdso/">vDSO and Virtual System Calls, Linux Kernel Internals</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/lib/vdso/gettimeofday.c">lib/vdso/gettimeofday.c, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/vdso/datapage.h">include/vdso/datapage.h, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/arch/x86/include/asm/vdso/gettimeofday.h">arch/x86/include/asm/vdso/gettimeofday.h, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/tools/testing/selftests/vDSO/parse_vdso.c">tools/testing/selftests/vDSO/parse_vdso.c, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/arch/x86/entry/vsyscall/vsyscall_64.c">arch/x86/entry/vsyscall/vsyscall_64.c, Linux kernel source</a></li>
+  <li><a href="https://lwn.net/Articles/446528/">On vsyscalls and the vDSO, LWN.net</a></li>
+  <li><a href="https://lwn.net/Articles/792198/">vsyscall xonly mode, Andy Lutomirski patch series, LWN.net</a></li>
+  <li><a href="https://www.spinics.net/lists/kernel/msg6109011.html">x86/vsyscall: Restore vsyscall=xonly mode under LASS, tip tree</a></li>
+  <li><a href="https://lwn.net/Articles/980447/">Another try for getrandom() in the vDSO, LWN.net</a></li>
+  <li><a href="https://lwn.net/Articles/983186/">What became of getrandom() in the vDSO, LWN.net</a></li>
+  <li><a href="https://lkml.org/lkml/2024/7/14/216">Jason A. Donenfeld, random number generator updates for 6.11-rc1, LKML</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/lib/vdso/getrandom.c">lib/vdso/getrandom.c, Linux kernel source</a></li>
+  <li><a href="https://sourceware.org/pipermail/glibc-cvs/2024q4/086626.html">linux: Add support for getrandom vDSO, glibc commit</a></li>
+  <li><a href="https://sourceware.org/pipermail/libc-announce/2025/000045.html">The GNU C Library version 2.41 is now available</a></li>
+  <li><a href="https://berthub.eu/articles/posts/on-linux-vdso-and-clockgettime/">Bert Hubert, On Linux vDSO and clock_gettime</a></li>
+  <li><a href="https://blog.packagecloud.io/system-calls-are-much-slower-on-ec2/">Two frequently used system calls are ~77% slower on AWS EC2, Packagecloud</a></li>
+  <li><a href="https://www.heap.io/blog/running-a-database-on-ec2-your-clock-could-be-slowing-you-down">Running a database on EC2? Your clock could be slowing you down, Heap</a></li>
+  <li><a href="https://lists.xenproject.org/archives/html/xen-devel/2022-12/msg01292.html">Prefer tsc over the xen clocksource when safe, xen-devel</a></li>
+</ol>
+</div>
+</body>
+</html>

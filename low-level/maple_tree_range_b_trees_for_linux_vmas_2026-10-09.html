@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Maple Tree: Range B-Trees for Linux VMAs</title>
+<meta name="description" content="How Linux 6.1 replaced the VMA red-black tree, linked list and vmacache with an RCU-safe range B-tree that packs pivots into 256-byte nodes, tracks free gaps for mmap, and unlocks lockless lookups under mmap_lock contention.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>The Maple Tree: Range B-Trees for Linux VMAs</h1>
+<p class="subtitle">One RCU-safe range B-tree replaced three structures that every mmap, page fault and /proc/maps walk used to touch.</p>
+<p class="meta">October 9, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>Every process address space is a set of <strong>virtual memory areas</strong> (<code>vm_area_struct</code>): anonymous heaps, file mappings, stacks, libraries. Until Linux 6.1 those VMAs lived in three places at once — an augmented red-black tree keyed on <code>vm_start</code>, a doubly-linked list for sequential walks, and a per-task <code>vmacache</code> that tried to make the common lookup cheap. Liam Howlett and Matthew Wilcox replaced all three with the <strong>maple tree</strong>: an RCU-safe, range-keyed B-tree whose 256-byte nodes pack up to 16 leaf slots, track the largest free gap for <code>mmap()</code>, and let readers walk under <code>rcu_read_lock()</code> without taking <code>mmap_lock</code> (<a href="https://lwn.net/Articles/845507/">LWN</a>, <a href="https://docs.kernel.org/core-api/maple_tree.html">kernel docs</a>).</p>
+
+<div class="callout"><strong>Why it exists:</strong> rbtrees do not store ranges natively, rotations make them hostile to RCU, and the linked list forced a cache miss per VMA. Large threaded workloads spent their time fighting over <code>mmap_lock</code>. The maple tree was built so that structure can eventually stop being the bottleneck.</div>
+
+<h2>What got replaced</h2>
+<p>Before 6.1, <code>mm_struct</code> held <code>mm_rb</code> (the rbtree) and <code>mmap</code> (the head of the VMA list). Each <code>vm_area_struct</code> carried an embedded <code>rb_node</code> plus <code>vm_next</code>/<code>vm_prev</code> — roughly forty bytes of indexing overhead per mapping, and every insert or delete had to update both structures under the write side of what is now called <code>mmap_lock</code> (<a href="https://kernel-internals.org/mm/maple-tree/">Kernel Internals</a>). Sequential scans for <code>/proc/PID/maps</code>, <code>mprotect</code> and friends chased pointers across slab objects with no hardware prefetch help. Gap search for a new mapping walked the tree or list looking for a hole large enough. The vmacache papered over hot lookups but was another structure to invalidate.</p>
+<p>Oracle's Howlett described the design goals plainly: store non-overlapping ranges, track gaps, stay RCU-safe, and offer a simple API so other subsystems stop reinventing interval trees for non-overlapping data (<a href="https://blogs.oracle.com/linux/the-maple-tree-a-modern-data-structure-for-a-complex-problem">Oracle blog</a>). The merged series landed in 6.1 and deleted the VMA rbtree, linked list and vmacache in one go (<a href="https://lwn.net/Articles/901714/">patch cover letter</a>).</p>
+
+<div class="diagram-container">
+<h4>From three structures to one range B-tree</h4>
+<svg width="760" height="300" viewBox="0 0 760 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+  </defs>
+  <text x="20" y="24" fill="#8b90a0" font-size="12">BEFORE (≤ 5.x)</text>
+  <rect x="20" y="40" width="200" height="70" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="120" y="68" fill="#ff6b9d" font-size="13" text-anchor="middle">mm_rb (rbtree)</text>
+  <text x="120" y="88" fill="#8b90a0" font-size="11" text-anchor="middle">point lookup O(log n)</text>
+  <rect x="240" y="40" width="200" height="70" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="340" y="68" fill="#ff6b9d" font-size="13" text-anchor="middle">vma linked list</text>
+  <text x="340" y="88" fill="#8b90a0" font-size="11" text-anchor="middle">sequential walk</text>
+  <rect x="460" y="40" width="200" height="70" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="560" y="68" fill="#ff6b9d" font-size="13" text-anchor="middle">vmacache</text>
+  <text x="560" y="88" fill="#8b90a0" font-size="11" text-anchor="middle">hot-path shortcut</text>
+  <text x="380" y="140" fill="#6c8cff" font-size="12" text-anchor="middle">mmap_lock write updates all three</text>
+  <line x1="380" y1="150" x2="380" y2="175" stroke="#6c8cff" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="20" y="200" fill="#8b90a0" font-size="12">AFTER (6.1+)</text>
+  <rect x="180" y="215" width="400" height="70" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="380" y="243" fill="#4ecdc4" font-size="14" text-anchor="middle">mm_mt — maple tree</text>
+  <text x="380" y="263" fill="#8b90a0" font-size="11" text-anchor="middle">ranges + gaps + RCU + iteration in one structure</text>
+</svg>
+</div>
+
+<h2>How a maple node works</h2>
+<p>A maple tree is a B-tree variant for non-overlapping ranges of <code>unsigned long</code> keys. On 64-bit, every node is 256 bytes and 256-byte aligned, so the low bits of a node pointer encode type metadata without an extra load (<a href="https://kernel-internals.org/mm/maple-tree/">Kernel Internals</a>). Leaf <code>maple_range_64</code> nodes hold up to 15 pivots and 16 slots; each pivot is the inclusive upper bound of the range in that slot. Allocation trees (used for VMAs) use <code>maple_arange_64</code> nodes with a branching factor of 10 and an extra <code>gap[]</code> array that stores the largest contiguous NULL hole under each child — so <code>mas_empty_area()</code> can skip whole subtrees when searching for a free region of a given size.</p>
+<p><code>mm_struct.mm_mt</code> is created with <code>MM_MT_FLAGS</code>: <code>MT_FLAGS_ALLOC_RANGE</code> (gap tracking), <code>MT_FLAGS_USE_RCU</code> (deferred free via <code>call_rcu</code>), and <code>MT_FLAGS_LOCK_EXTERN</code> (mutations serialize on <code>mmap_lock</code>, not the tree's internal spinlock). The key for a VMA is <code>[vm_start, vm_end - 1]</code>; the value is the <code>vm_area_struct *</code>.</p>
+
+<div class="diagram-container">
+<h4>Leaf node: pivots, slots and tracked gaps</h4>
+<svg width="760" height="260" viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="40" y="20" width="680" height="100" rx="10" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="56" y="44" fill="#8b90a0" font-size="12">maple_arange_64 (256 B)</text>
+  <rect x="60" y="58" width="90" height="44" rx="6" fill="#232733" stroke="#6c8cff"/>
+  <text x="105" y="78" fill="#e1e4ed" font-size="11" text-anchor="middle">pivot[0]</text>
+  <text x="105" y="94" fill="#8b90a0" font-size="10" text-anchor="middle">0x2000</text>
+  <rect x="160" y="58" width="90" height="44" rx="6" fill="#232733" stroke="#6c8cff"/>
+  <text x="205" y="78" fill="#e1e4ed" font-size="11" text-anchor="middle">pivot[1]</text>
+  <text x="205" y="94" fill="#8b90a0" font-size="10" text-anchor="middle">0x5000</text>
+  <rect x="260" y="58" width="90" height="44" rx="6" fill="#232733" stroke="#6c8cff"/>
+  <text x="305" y="78" fill="#e1e4ed" font-size="11" text-anchor="middle">pivot[2]</text>
+  <text x="305" y="94" fill="#8b90a0" font-size="10" text-anchor="middle">0x9000</text>
+  <rect x="360" y="58" width="70" height="44" rx="6" fill="#232733" stroke="#8b90a0"/>
+  <text x="395" y="85" fill="#8b90a0" font-size="11" text-anchor="middle">…</text>
+  <rect x="440" y="58" width="100" height="44" rx="6" fill="#232733" stroke="#4ecdc4"/>
+  <text x="490" y="78" fill="#4ecdc4" font-size="11" text-anchor="middle">slot[i]</text>
+  <text x="490" y="94" fill="#8b90a0" font-size="10" text-anchor="middle">vma*</text>
+  <rect x="550" y="58" width="100" height="44" rx="6" fill="#232733" stroke="#ffd93d"/>
+  <text x="600" y="78" fill="#ffd93d" font-size="11" text-anchor="middle">gap[i]</text>
+  <text x="600" y="94" fill="#8b90a0" font-size="10" text-anchor="middle">max hole</text>
+  <text x="380" y="150" fill="#8b90a0" font-size="12" text-anchor="middle">Slot i covers (pivot[i−1], pivot[i]]. NULL slots are address holes.</text>
+  <rect x="80" y="175" width="180" height="56" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="170" y="200" fill="#4ecdc4" font-size="12" text-anchor="middle">find_vma(addr)</text>
+  <text x="170" y="216" fill="#8b90a0" font-size="11" text-anchor="middle">mt_find / mas_walk</text>
+  <rect x="290" y="175" width="180" height="56" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="380" y="200" fill="#ffd93d" font-size="12" text-anchor="middle">mmap gap search</text>
+  <text x="380" y="216" fill="#8b90a0" font-size="11" text-anchor="middle">mas_empty_area</text>
+  <rect x="500" y="175" width="180" height="56" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="590" y="200" fill="#ff6b9d" font-size="12" text-anchor="middle">for_each_vma</text>
+  <text x="590" y="216" fill="#8b90a0" font-size="11" text-anchor="middle">mas_find cursor</text>
+</svg>
+</div>
+
+<h3>Lookups, iteration and allocation</h3>
+<p><code>find_vma()</code> is now a thin wrapper around <code>mt_find(&amp;mm-&gt;mm_mt, &amp;index, ULONG_MAX)</code>: start at the address and return the first range that covers or follows it. Writers and complex walks use a <code>struct ma_state</code> cursor (<code>MA_STATE</code> / <code>VMA_ITERATOR</code>) that remembers the current node and offset so <code>mas_next()</code> / <code>mas_find()</code> behave like a linked list without restarting from the root — the high branching factor amortizes the cost and keeps neighbors in the same cache line (<a href="https://docs.kernel.org/core-api/maple_tree.html">maple_tree.rst</a>). Inserts go through <code>vma_iter_store_gfp()</code>, which sets <code>[vm_start, vm_end - 1]</code> on the cursor and calls <code>mas_store_gfp()</code>.</p>
+
+<h3>RCU and the path off mmap_lock</h3>
+<p>When <code>MT_FLAGS_USE_RCU</code> is set, a store that rewrites a node allocates a fresh node, swings the parent pointer, and schedules the old node with <code>call_rcu()</code>. Readers that already hold a pointer stay safe for one grace period. That is the foundation of the per-VMA lock fast path: <code>lock_vma_under_rcu()</code> takes <code>rcu_read_lock()</code>, runs <code>mas_walk()</code>, and tries a VMA read lock without ever taking <code>mmap_lock</code> (<a href="https://kernel-internals.org/mm/maple-tree/">Kernel Internals</a>). Process teardown and bulk <code>dup_mmap()</code> temporarily clear RCU mode so mass frees are not deferred, then re-enable it.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">rbtree + list + cache</h4>
+    <ul>
+      <li>Embedded nodes: load a whole VMA to compare keys</li>
+      <li>Rotations touch many nodes; hard to make RCU-safe</li>
+      <li>Gap search often O(n); list walk is pointer-chasing</li>
+      <li>~40 B indexing overhead per VMA</li>
+      <li>Readers needed mmap_lock (or fragile cache)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Maple tree</h4>
+    <ul>
+      <li>External 256 B nodes; up to 16 entries per leaf</li>
+      <li>Copy-on-write nodes + call_rcu for lockless reads</li>
+      <li>Gap metadata → O(log n) empty-area search</li>
+      <li>Amortized ~16 B indexing per VMA</li>
+      <li>RCU walk enables per-VMA lock fast path</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout"><strong>War story — StackRot (CVE-2023-3269):</strong> early 6.1–6.4 kernels let stack expansion modify the maple tree while holding only the mmap <em>read</em> lock. Growing a stack until it abutted the next VMA deleted a gap and replaced a node; the old node was RCU-freed while another thread walking under the read lock still held a pointer — a use-after-free that escalated privileges. The fix backported proper RCU node replacement so tree mutations under that path stay safe (<a href="https://www.openwall.com/lists/oss-security/2023/07/05/1">oss-security</a>). Complexity bought scalability; it also demanded careful locking discipline.</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Page faults at scale</div><div class="desc"><code>find_vma</code> and the RCU walk feed every fault path. Shorter trees and lockless lookups cut contention on multi-threaded servers with huge working sets.</div></div>
+  <div class="use-case"><div class="label">mmap address selection</div><div class="desc"><code>mas_empty_area</code> / <code>mas_empty_area_rev</code> use gap metadata so loading libraries or anonymous mappings does not scan the whole address space.</div></div>
+  <div class="use-case"><div class="label">/proc/PID/maps</div><div class="desc">Iteration uses <code>for_each_vma</code> over <code>mm_mt</code>; one node load yields many VMA pointers instead of one cache miss per list hop.</div></div>
+  <div class="use-case"><div class="label">Fork and exec</div><div class="desc"><code>__mt_dup</code> bulk-copies the parent tree; <code>exit_mmap</code> destroys it with <code>__mt_destroy</code> after clearing RCU mode for teardown.</div></div>
+  <div class="use-case"><div class="label">Per-VMA locks</div><div class="desc">Later work builds fine-grained VMA locking on top of RCU maple walks so unrelated mappings do not serialize on one rwsem.</div></div>
+  <div class="use-case"><div class="label">Generic kernel ranges</div><div class="desc">The normal <code>mtree_*</code> API is reusable anywhere non-overlapping ranges need RCU-friendly storage — not only VMAs.</div></div>
+</div>
+
+<h2>Design takeaways</h2>
+<p>When one lock protects a hot path, ask whether the data structure itself forces the lock. Embedding index nodes inside payload objects looks cheap until every tree walk pulls three cache lines you did not need. Separating the index into dense, cache-aligned B-tree nodes, encoding ranges and gaps in the same layout, and freeing replaced nodes under RCU turns “everyone takes <code>mmap_lock</code>” into “most readers never see the writers.” The maple tree did not remove <code>mmap_lock</code> on day one — that was always the long-term goal — but it made the removal possible, and it removed three parallel structures that had outlived their excuses.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/core-api/maple_tree.html">Maple Tree — The Linux Kernel documentation</a></li>
+  <li><a href="https://lwn.net/Articles/845507/">Introducing maple trees, Marta Rybczyńska, LWN.net</a></li>
+  <li><a href="https://lwn.net/Articles/901714/">[PATCH v11 00/69] Introducing the Maple Tree, Liam Howlett</a></li>
+  <li><a href="https://blogs.oracle.com/linux/the-maple-tree-a-modern-data-structure-for-a-complex-problem">The Maple Tree, A Modern Data Structure for a Complex Problem, Liam Howlett, Oracle</a></li>
+  <li><a href="https://kernel-internals.org/mm/maple-tree/">Maple Tree: VMA Management Data Structure, Linux Kernel Internals</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/lib/maple_tree.c">lib/maple_tree.c, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/maple_tree.h">include/linux/maple_tree.h, Linux kernel source</a></li>
+  <li><a href="https://www.openwall.com/lists/oss-security/2023/07/05/1">StackRot (CVE-2023-3269), oss-security</a></li>
+  <li><a href="https://docs.kernel.org/mm/process_addrs.html">Process Addresses — The Linux Kernel documentation</a></li>
+</ol>
+</div>
+</body>
+</html>

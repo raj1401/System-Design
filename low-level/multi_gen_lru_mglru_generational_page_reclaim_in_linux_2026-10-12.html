@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Gen LRU (MGLRU): Generational Page Reclaim in Linux</title>
+<meta name="description" content="How the Linux Multi-Gen LRU replaces the active and inactive page lists with a sliding window of generations, scans page tables instead of reverse maps, and uses refault feedback to decide what to evict under memory pressure.">
+<style> block into the document's <head> EXACTLY as written, character for character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Multi-Gen LRU (MGLRU): Generational Page Reclaim in Linux</h1>
+<p class="subtitle">Instead of two lists and a guess, Linux sorts memory into a sliding window of generations and lets refaults tell it when it guessed wrong.</p>
+<p class="meta">October 12, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>When RAM runs out, the kernel has to pick pages to throw away: clean file pages it can drop, dirty ones it must write back, anonymous pages it must push to swap or zram. That choice is <strong>page reclaim</strong>, and it decides both how much CPU <code>kswapd</code> burns and how often your app stalls on a major fault. For decades Linux made the choice with two LRU lists per memory cgroup and node, <em>active</em> and <em>inactive</em>. Google engineer Yu Zhao's <strong>Multi-Gen LRU</strong> (MGLRU), merged in Linux 6.1, replaces that pair with up to four <strong>generations</strong> of pages ordered by access recency, finds hot pages by walking page tables rather than reverse maps, and uses a refault-driven feedback loop to choose between file and anonymous memory (<a href="https://docs.kernel.org/mm/multigen_lru.html">kernel design doc</a>, <a href="https://lwn.net/Articles/910608/">LWN 6.1 merge window</a>).</p>
+
+<div class="callout"><strong>Headline numbers:</strong> before merging, Google rolled MGLRU out to tens of millions of Chrome OS users and about a million Android users, and reported a 40% drop in <code>kswapd</code> CPU usage fleet-wide, 85% fewer low-memory kills at the 75th percentile, and 18% faster app launches at the median (<a href="https://lwn.net/Articles/904697/">v14 cover letter</a>).</div>
+
+<h2>What was wrong with two lists</h2>
+<p>The classic scheme puts recently used pages on the active list and lets cold ones slide to the inactive list, a purgatory where a second touch promotes the page back and no touch means eviction (<a href="https://lwn.net/Articles/851184/">LWN, 2021</a>). Zhao's patches named the problems with that model. Two buckets are too coarse to rank pages, and pages often sit on the wrong list. Each cgroup has its own lists, so the kernel cannot easily compare page age across cgroups. A long-standing bias toward evicting file pages can toss useful page cache while idle anonymous memory stays put, which hurts most on cloud machines with little local storage.</p>
+<p>The deepest cost is how the kernel learns that a mapped page was used. The hardware sets an <em>accessed</em> bit in the page table entry (PTE), but reclaim walks physical pages, so for each candidate it must use the <strong>reverse map</strong> (rmap) to find every PTE that maps it. Those PTEs live in unrelated page tables, so each lookup is a string of cache misses. On a server with 99% of memory mapped, Zhao showed a proactive-reclaim profile where <code>page_vma_mapped_walk</code> alone took 41% of the CPU (<a href="https://lists.openwall.net/linux-kernel/2021/04/27/527">LKML discussion</a>).</p>
+
+<div class="diagram-container">
+<h4>Two lists versus a sliding window of generations</h4>
+<svg width="760" height="300" viewBox="0 0 760 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+  </defs>
+  <text x="20" y="24" fill="#8b90a0" font-size="12">CLASSIC LRU</text>
+  <rect x="20" y="36" width="300" height="56" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="170" y="60" fill="#4ecdc4" font-size="13" text-anchor="middle">active list</text>
+  <text x="170" y="78" fill="#8b90a0" font-size="11" text-anchor="middle">"recently used"</text>
+  <rect x="380" y="36" width="300" height="56" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="530" y="60" fill="#ffd93d" font-size="13" text-anchor="middle">inactive list</text>
+  <text x="530" y="78" fill="#8b90a0" font-size="11" text-anchor="middle">"maybe cold" &#183; evicted from tail</text>
+  <line x1="322" y1="56" x2="376" y2="56" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="376" y1="76" x2="324" y2="76" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="682" y1="64" x2="735" y2="64" stroke="#ff6b9d" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="380" y="118" fill="#8b90a0" font-size="11" text-anchor="middle">age is two-valued; mapped pages checked one at a time through the rmap</text>
+
+  <text x="20" y="160" fill="#8b90a0" font-size="12">MULTI-GEN LRU (MAX_NR_GENS = 4)</text>
+  <rect x="20" y="174" width="150" height="66" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="95" y="200" fill="#ff6b9d" font-size="13" text-anchor="middle">min_seq</text>
+  <text x="95" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">oldest &#183; evict here</text>
+  <rect x="190" y="174" width="150" height="66" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="265" y="200" fill="#ffd93d" font-size="13" text-anchor="middle">min_seq + 1</text>
+  <text x="265" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">aging out</text>
+  <rect x="360" y="174" width="150" height="66" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="435" y="200" fill="#6c8cff" font-size="13" text-anchor="middle">max_seq - 1</text>
+  <text x="435" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">not evictable</text>
+  <rect x="530" y="174" width="150" height="66" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="605" y="200" fill="#4ecdc4" font-size="13" text-anchor="middle">max_seq</text>
+  <text x="605" y="220" fill="#8b90a0" font-size="11" text-anchor="middle">youngest</text>
+  <line x1="682" y1="207" x2="735" y2="207" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="712" y="196" fill="#4ecdc4" font-size="10" text-anchor="middle">aging</text>
+  <line x1="18" y1="207" x2="2" y2="207" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="380" y="268" fill="#8b90a0" font-size="11" text-anchor="middle">aging bumps max_seq (window grows right); eviction empties min_seq (window shrinks left)</text>
+  <text x="380" y="286" fill="#8b90a0" font-size="11" text-anchor="middle">a page found young is moved to max_seq; everything else gets older for free</text>
+</svg>
+</div>
+
+<h2>Generations: a sliding window of age</h2>
+<p>Each <code>lruvec</code> (one per memory cgroup per NUMA node) carries a <code>struct lru_gen_folio</code>. Its <code>max_seq</code> counts the youngest generation and is shared by anon and file pages so they age on equal footing; <code>min_seq[]</code> tracks the oldest generation separately for each type, because clean file pages can be evicted even when swap is unavailable. All three only ever increase (<a href="https://docs.kernel.org/mm/multigen_lru.html">design doc</a>). Pages live on <code>folios[MAX_NR_GENS][ANON_AND_FILE][MAX_NR_ZONES]</code> lists, and each generation records a birth timestamp in jiffies (<a href="https://github.com/torvalds/linux/blob/master/include/linux/mmzone.h">mmzone.h</a>).</p>
+<p>Sequence numbers are unbounded, but each folio stores only a small <em>gen counter</em> in spare bits of <code>folio-&gt;flags</code>, which is <code>seq % MAX_NR_GENS + 1</code> (zero means not on an MGLRU list). Upstream sets <code>MIN_NR_GENS</code> to 2 and <code>MAX_NR_GENS</code> to 4, so the kernel keeps between two and four live generations at a time. The two youngest act like the old active list and are never evicted; only older generations are candidates (<a href="https://github.com/torvalds/linux/blob/master/include/linux/mmzone.h">mmzone.h</a>, <a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">admin guide</a>).</p>
+<p>The clever part is that <strong>demotion is free</strong>. Making a new generation is just incrementing <code>max_seq</code>; every page not explicitly promoted is now one generation older without being touched. Lists are also <em>lazily sorted</em>: when aging finds a page accessed, it updates the gen counter in the folio flags, and the page is only physically moved to the right list when eviction reaches it.</p>
+
+<h3>Tiers for file-descriptor access</h3>
+<p>Pages read with <code>read()</code> are never mapped, so no accessed bit exists for them. MGLRU splits each generation into <strong>tiers</strong>: a page accessed <code>N</code> times through file descriptors sits in tier <code>order_base_2(N)</code>, up to <code>MAX_NR_TIERS</code> (4). Moving between tiers is an atomic update to <code>folio-&gt;flags</code>, not a list move under the LRU lock. Zhao's reasoning was that promoting a page to a new generation on its second read would burn through old generations too fast; with a random buffered read of a file twice the size of RAM, he measured <code>shrink_active_list()</code> at over 6% of <code>kswapd</code> CPU doing work that made no better decisions (<a href="https://lists.openwall.net/linux-kernel/2021/04/27/527">LKML discussion</a>).</p>
+
+<h2>Aging and eviction: a closed loop</h2>
+<p>Reclaim is two independent procedures that form a producer and consumer pair (<a href="https://docs.kernel.org/mm/multigen_lru.html">design doc</a>).</p>
+<p><strong>Aging</strong> produces young generations. When the window shrinks toward <code>MIN_NR_GENS</code>, aging walks each process on the cgroup's <code>mm_struct</code> list with <code>walk_page_range()</code>, scanning PTEs in virtual-address order. That is cache friendly, since one 4 KiB page table holds 512 adjacent PTEs. On each young PTE it clears the accessed bit and sets the page's gen counter to the youngest generation. Several walkers can run in parallel because each takes a different <code>mm_struct</code>, and processes that have not run since the last pass are skipped. After the walk, <code>max_seq</code> increments.</p>
+<p><strong>Eviction</strong> consumes the oldest generation. It picks the type (anon or file) whose <code>min_seq</code> is older; on a tie it takes the one whose first tier refaults less. Pages whose gen counter shows they were promoted are moved instead of evicted. When the oldest list empties, <code>min_seq</code> increments.</p>
+
+<div class="diagram-container">
+<h4>Aging, eviction, and the feedback between them</h4>
+<svg width="760" height="320" viewBox="0 0 760 320" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="b1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+    <marker id="b2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ffd93d"/></marker>
+  </defs>
+  <rect x="30" y="30" width="250" height="110" rx="10" fill="#232733" stroke="#4ecdc4"/>
+  <text x="155" y="56" fill="#4ecdc4" font-size="14" text-anchor="middle">AGING</text>
+  <text x="155" y="80" fill="#e1e4ed" font-size="11" text-anchor="middle">walk_page_range() per mm_struct</text>
+  <text x="155" y="98" fill="#8b90a0" font-size="11" text-anchor="middle">clear accessed bit, set gen = max_seq</text>
+  <text x="155" y="116" fill="#8b90a0" font-size="11" text-anchor="middle">then max_seq++</text>
+  <rect x="480" y="30" width="250" height="110" rx="10" fill="#232733" stroke="#ff6b9d"/>
+  <text x="605" y="56" fill="#ff6b9d" font-size="14" text-anchor="middle">EVICTION</text>
+  <text x="605" y="80" fill="#e1e4ed" font-size="11" text-anchor="middle">take oldest gen, pick anon or file</text>
+  <text x="605" y="98" fill="#8b90a0" font-size="11" text-anchor="middle">sort promoted pages, reclaim the rest</text>
+  <text x="605" y="116" fill="#8b90a0" font-size="11" text-anchor="middle">empty list: min_seq++</text>
+  <line x1="282" y1="66" x2="476" y2="66" stroke="#6c8cff" stroke-width="2" marker-end="url(#b1)"/>
+  <text x="380" y="58" fill="#6c8cff" font-size="11" text-anchor="middle">fresh generations</text>
+  <line x1="476" y1="112" x2="284" y2="112" stroke="#6c8cff" stroke-width="2" marker-end="url(#b1)"/>
+  <text x="380" y="130" fill="#6c8cff" font-size="11" text-anchor="middle">window too small: age more</text>
+  <rect x="480" y="190" width="250" height="100" rx="10" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="605" y="214" fill="#ffd93d" font-size="13" text-anchor="middle">rmap + lru_gen_look_around()</text>
+  <text x="605" y="236" fill="#8b90a0" font-size="11" text-anchor="middle">young PTE found? scan its neighbors</text>
+  <text x="605" y="254" fill="#8b90a0" font-size="11" text-anchor="middle">dense hot PMD added to Bloom filter</text>
+  <rect x="30" y="190" width="250" height="100" rx="10" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="155" y="214" fill="#ffd93d" font-size="13" text-anchor="middle">Bloom filter of PMDs</text>
+  <text x="155" y="236" fill="#8b90a0" font-size="11" text-anchor="middle">next page table walk scans only</text>
+  <text x="155" y="254" fill="#8b90a0" font-size="11" text-anchor="middle">PTE tables likely to be hot</text>
+  <line x1="605" y1="142" x2="605" y2="186" stroke="#ffd93d" stroke-width="2" marker-end="url(#b2)"/>
+  <line x1="478" y1="240" x2="284" y2="240" stroke="#ffd93d" stroke-width="2" marker-end="url(#b2)"/>
+  <line x1="155" y1="188" x2="155" y2="144" stroke="#ffd93d" stroke-width="2" marker-end="url(#b2)"/>
+  <text x="380" y="310" fill="#8b90a0" font-size="11" text-anchor="middle">a false positive only costs one extra scan of 512 PTEs, which may find hot pages anyway</text>
+</svg>
+</div>
+
+<h3>Spatial locality and Bloom filters</h3>
+<p>Page table walks are cheap per PTE but wasted on sparse address spaces; rmap walks target one page but learn nothing about its neighbors. MGLRU uses both. When eviction does go through the rmap and finds a young PTE, <code>lru_gen_look_around()</code> scans the adjacent PTEs in the same table and promotes their hot pages too. If that table turned out densely hot, the PMD entry pointing to it goes into a <strong>Bloom filter</strong>, and the next aging pass only descends into PTE tables the filter says may be hot (<a href="https://docs.kernel.org/mm/multigen_lru.html">design doc</a>). On x86 the hardware also sets accessed bits in non-leaf entries, which lets aging skip whole untouched regions; these behaviors are controlled by bits <code>0x0002</code> and <code>0x0004</code> of <code>/sys/kernel/mm/lru_gen/enabled</code> (<a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">admin guide</a>).</p>
+
+<h3>The PID controller</h3>
+<p>Choosing between anon and file memory is where the old LRU had a built-in bias. MGLRU instead runs a feedback loop modeled on a proportional-integral-derivative (PID) controller. It tracks moving averages of how many pages from each type and tier were evicted and then <em>refaulted</em> (brought back soon after, a sign of a bad choice), with the first tier as the baseline, and protects tiers whose refault rate stands out. The goal is to keep refault percentages of anon and file balanced in proportion to <code>swappiness</code>. Its clock is generations rather than wall time, because scan rate varies wildly with memory pressure (<a href="https://docs.kernel.org/mm/multigen_lru.html">design doc</a>).</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">Classic active/inactive LRU</h4>
+    <ul>
+      <li>Two ages per list: active or inactive</li>
+      <li>Accessed bits gathered page by page through the rmap</li>
+      <li>Hard to compare age across cgroups</li>
+      <li>Heuristic bias toward evicting file pages</li>
+      <li>Decades of tuning across many workloads</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Multi-Gen LRU</h4>
+    <ul>
+      <li>Two to four generations with birth timestamps</li>
+      <li>Page table walks plus look-around and Bloom filters</li>
+      <li>Generations are a shared time base across cgroups</li>
+      <li>Refault feedback balances anon and file</li>
+      <li>About 500 bytes per memcg and node, about 50 per process</li>
+    </ul>
+  </div>
+</div>
+<p>The memory overhead figures come from Zhao in the <a href="https://lwn.net/Articles/851605/">LWN comment thread</a>, where he also noted the extra per-page state lives in spare bits of the page flags.</p>
+
+<h2>Knobs worth knowing</h2>
+<p>MGLRU builds with <code>CONFIG_LRU_GEN</code>, and <code>CONFIG_LRU_GEN_ENABLED</code> decides whether it is on at boot; upstream leaves that default off, so the choice is up to each distribution or device vendor (<a href="https://github.com/torvalds/linux/blob/master/mm/Kconfig">mm/Kconfig</a>). At runtime, <code>echo n &gt; /sys/kernel/mm/lru_gen/enabled</code> is the kill switch that falls back to the classic lists, a safety valve memory-management maintainers asked for before merging (<a href="https://lwn.net/Articles/894859/">LWN, LSFMM 2022</a>).</p>
+<p>Because every generation is timestamped, MGLRU can also protect a working set by <em>time</em>. Writing <code>N</code> to <code>min_ttl_ms</code> prevents pages used in the last <code>N</code> milliseconds from being evicted, and triggers the OOM killer if that set cannot fit. The admin guide suggests <code>1000</code> to eliminate intolerable desktop jank from thrashing, aimed at laptop and desktop users without <code>oomd</code> (<a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">admin guide</a>).</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Phones and Chromebooks</div><div class="desc">Android and Chrome OS shipped MGLRU first; fewer low-memory kills means fewer apps and tabs reloading from scratch (<a href="https://lwn.net/Articles/904697/">v14 cover letter</a>).</div></div>
+  <div class="use-case"><div class="label">Desktop distros and kernels</div><div class="desc">The cover letter lists Arch Linux Zen, Armbian, Liquorix, XanMod and others as users of the patches before they reached mainline.</div></div>
+  <div class="use-case"><div class="label">Datacenter bin packing</div><div class="desc">Reading <code>/sys/kernel/debug/lru_gen</code> yields a per-memcg, per-node histogram of page ages that a scheduler can use to estimate working sets before placing a job (<a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">admin guide</a>).</div></div>
+  <div class="use-case"><div class="label">Proactive reclaim to zram</div><div class="desc">The <code>-</code> command evicts generations older than a chosen one with no memory pressure, using page table walks instead of the rmap scans that made this costly on mostly mapped systems (<a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">admin guide</a>).</div></div>
+  <div class="use-case"><div class="label">Memory overcommit at scale</div><div class="desc">A later memcg LRU, an LRU of per-cgroup LRUs, makes global reclaim pick cgroups in O(1) best case instead of walking them all (<a href="https://www.phoronix.com/news/Linux-MGLRU-memcg-LRU">Phoronix</a>).</div></div>
+  <div class="use-case"><div class="label">Jank-free laptops</div><div class="desc"><code>min_ttl_ms</code> turns thrashing into a quick OOM kill of a likely idle app instead of a frozen UI.</div></div>
+</div>
+
+<div class="callout"><strong>Design lesson:</strong> MGLRU wins less by a smarter eviction rule than by gathering the evidence differently. Scanning page tables in address order, and letting one hot PTE pull in its 511 neighbors, turned the most expensive part of reclaim into a mostly sequential sweep, and the refault feedback loop corrects the cheap guesses that remain.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/mm/multigen_lru.html">Multi-Gen LRU: design documentation</a>, The Linux Kernel documentation.</li>
+  <li><a href="https://docs.kernel.org/admin-guide/mm/multigen_lru.html">Multi-Gen LRU: admin guide</a>, The Linux Kernel documentation.</li>
+  <li><a href="https://lwn.net/Articles/851184/">The multi-generational LRU</a>, Jonathan Corbet, LWN, April 2021.</li>
+  <li><a href="https://lwn.net/Articles/851605/">Comment by Yu Zhao on memory overhead</a>, LWN, April 2021.</li>
+  <li><a href="https://lwn.net/Articles/894859/">Merging the multi-generational LRU</a>, Jonathan Corbet, LWN, May 2022 (LSFMM).</li>
+  <li><a href="https://lwn.net/Articles/904697/">[PATCH v14 00/14] Multi-Gen LRU Framework</a>, Yu Zhao, August 2022.</li>
+  <li><a href="https://lkml.indiana.edu/2104.1/08894.html">Re: [PATCH v2 00/16] Multigenerational LRU Framework</a>, linux-kernel archive, April 2021.</li>
+  <li><a href="https://lists.openwall.net/linux-kernel/2021/04/27/527">Re: [PATCH v2 00/16] Multigenerational LRU Framework (tiers and rmap cost)</a>, linux-kernel via Openwall, April 2021.</li>
+  <li><a href="https://lwn.net/Articles/910608/">The rest of the 6.1 merge window</a>, LWN, October 2022.</li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/mmzone.h">include/linux/mmzone.h</a>, Linux source (struct lru_gen_folio, MIN_NR_GENS, MAX_NR_GENS, MAX_NR_TIERS).</li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/mm/Kconfig">mm/Kconfig</a>, Linux source (LRU_GEN, LRU_GEN_ENABLED).</li>
+  <li><a href="https://www.phoronix.com/news/Linux-MGLRU-memcg-LRU">New MGLRU Linux patches look to improve the scalability of global reclaim</a>, Phoronix.</li>
+</ol>
+</div>
+</body>
+</html>

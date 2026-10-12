@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leader Election with Leases and Fencing Tokens</title>
+<meta name="description" content="How systems pick a single leader with time-bounded leases, why leases alone cannot prevent split brain after a GC pause or partition, and how fencing tokens let the protected resource reject a stale leader.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Leader Election with Leases and Fencing Tokens</h1>
+<p class="subtitle">Picking one leader is easy. Making sure the old one can no longer do damage is the real problem.</p>
+<p class="meta">October 12, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>Many systems need exactly one node to do a job at a time: one scheduler assigning work, one controller reconciling state, one primary accepting writes, one cron runner firing a nightly batch. <strong>Leader election</strong> picks that node, and a <strong>lease</strong> makes the choice time-bounded: the leader holds a grant that expires unless it keeps renewing it, so if the leader crashes, someone else can take over after the lease runs out. Leases were introduced by Gray and Cheriton as a fault-tolerant way to keep caches consistent, where failures affect performance but not correctness as long as clocks behave (<a href="https://web.stanford.edu/class/cs240/readings/leases.pdf">Gray &amp; Cheriton, 1989</a>).</p>
+<p>The catch is that a lease tells the old leader when it <em>should</em> stop, not that it <em>has</em> stopped. A process frozen by a garbage-collection pause, a VM migration, or a network partition can wake up still believing it leads. The fix is a <strong>fencing token</strong>: a number that increases every time leadership is granted, carried on every write, and checked by the resource itself, which rejects any token older than the newest one it has seen (<a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html">Kleppmann, 2016</a>).</p>
+
+<div class="callout"><strong>Core rule:</strong> Election decides who <em>should</em> act. Fencing decides whose actions are <em>accepted</em>. Without the second, the first is only a hint.</div>
+
+<h2>How it works</h2>
+
+<h3>1. A linearizable store holds the lease</h3>
+<p>Candidates race to write a single record in a strongly consistent coordination store such as ZooKeeper, etcd, Consul, or a Kubernetes <code>Lease</code> object (which itself sits in etcd behind the API server). Because the store runs consensus, only one conditional write can win. In etcd, a candidate attaches its key to a lease with a TTL and campaigns with a compare-and-swap transaction that succeeds only if the key does not yet exist; the returned <code>LeaderKey</code> carries the key's creation revision, which can be used to guard later transactions on leadership still being held (<a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/">etcd concurrency API</a>, <a href="https://github.com/etcd-io/etcd/blob/main/client/v3/concurrency/election.go">election.go</a>).</p>
+
+<h3>2. The leader renews, followers wait</h3>
+<p>The leader heartbeats to extend its lease. Followers watch the record and only try to take over once it has gone unrenewed for the full lease duration. Kubernetes' client library exposes exactly these knobs: <code>LeaseDuration</code> (how long candidates wait before force-acquiring), <code>RenewDeadline</code> (how long the leader keeps retrying renewal before giving up), and <code>RetryPeriod</code> (<a href="https://pkg.go.dev/k8s.io/client-go/tools/leaderelection">client-go leaderelection</a>). The Lease object stores <code>holderIdentity</code>, <code>renewTime</code>, <code>leaseDurationSeconds</code>, and a <code>leaseTransitions</code> counter (<a href="https://kubernetes.io/docs/reference/kubernetes-api/coordination/lease-v1/">Lease v1 API</a>).</p>
+
+<div class="diagram-container">
+<h4>Lease timing: leader renews well before followers may take over</h4>
+<svg viewBox="0 0 720 230" width="100%" style="max-width:720px" font-family="Inter,sans-serif">
+  <rect x="0" y="0" width="720" height="230" fill="#1a1d27"/>
+  <line x1="60" y1="190" x2="690" y2="190" stroke="#8b90a0" stroke-width="1.5"/>
+  <text x="690" y="210" fill="#8b90a0" font-size="11" text-anchor="end">time &#8594;</text>
+  <text x="20" y="64" fill="#e1e4ed" font-size="12">Leader</text>
+  <text x="20" y="144" fill="#e1e4ed" font-size="12">Follower</text>
+  <!-- lease windows -->
+  <rect x="80" y="45" width="300" height="28" rx="5" fill="#6c8cff33" stroke="#6c8cff"/>
+  <text x="230" y="64" fill="#e1e4ed" font-size="11" text-anchor="middle">lease #1 (LeaseDuration)</text>
+  <rect x="260" y="85" width="300" height="28" rx="5" fill="#4ecdc433" stroke="#4ecdc4"/>
+  <text x="410" y="104" fill="#e1e4ed" font-size="11" text-anchor="middle">renewed lease (extended)</text>
+  <!-- renew deadline -->
+  <line x1="80" y1="32" x2="260" y2="32" stroke="#ffd93d" stroke-width="2"/>
+  <text x="170" y="25" fill="#ffd93d" font-size="11" text-anchor="middle">RenewDeadline</text>
+  <circle cx="260" cy="99" r="5" fill="#4ecdc4"/>
+  <text x="260" y="128" fill="#4ecdc4" font-size="10" text-anchor="middle">renew OK</text>
+  <!-- follower polling -->
+  <g fill="#8b90a0">
+    <circle cx="140" cy="140" r="4"/><circle cx="220" cy="140" r="4"/><circle cx="300" cy="140" r="4"/><circle cx="380" cy="140" r="4"/><circle cx="460" cy="140" r="4"/>
+  </g>
+  <text x="300" y="165" fill="#8b90a0" font-size="10" text-anchor="middle">follower retries every RetryPeriod, sees a fresh renewTime, keeps waiting</text>
+  <line x1="560" y1="40" x2="560" y2="190" stroke="#ff6b9d" stroke-dasharray="4 4"/>
+  <text x="565" y="145" fill="#ff6b9d" font-size="11">earliest takeover</text>
+  <text x="565" y="160" fill="#ff6b9d" font-size="10">if no further renewals</text>
+</svg>
+</div>
+
+<h3>3. Why leases alone are not enough</h3>
+<p>Every lease depends on time. The client-go docs say plainly that the implementation "does not guarantee that only one client is acting as a leader (a.k.a. fencing)"; it tolerates clock skew but not arbitrary differences in clock <em>rate</em>, which you budget for via the ratio of <code>LeaseDuration</code> to <code>RenewDeadline</code> (<a href="https://pkg.go.dev/k8s.io/client-go/tools/leaderelection">client-go</a>). The etcd team makes the same point in its <a href="https://etcd.io/docs/v3.5/learning/why/">notes on the usage of lock and lease</a> and ships a runnable demo of a client whose lease expires during a pause (<a href="https://github.com/etcd-io/etcd/blob/main/contrib/lock/README.md">etcd contrib/lock</a>). Jepsen's analysis of etcd 3.4.3 found key-value operations strict serializable but concluded that "etcd locks are fundamentally unsafe" for mutual exclusion on their own (<a href="https://jepsen.io/analyses/etcd-3.4.3">Jepsen, 2020</a>).</p>
+
+<div class="diagram-container">
+<h4>The zombie leader and the fence that stops it</h4>
+<svg viewBox="0 0 720 300" width="100%" style="max-width:720px" font-family="Inter,sans-serif">
+  <rect x="0" y="0" width="720" height="300" fill="#1a1d27"/>
+  <!-- lanes -->
+  <text x="20" y="54" fill="#e1e4ed" font-size="12">Node A</text>
+  <text x="20" y="134" fill="#e1e4ed" font-size="12">Lock service</text>
+  <text x="20" y="214" fill="#e1e4ed" font-size="12">Node B</text>
+  <text x="20" y="274" fill="#e1e4ed" font-size="12">Storage</text>
+  <line x1="110" y1="50" x2="700" y2="50" stroke="#2e3345"/>
+  <line x1="110" y1="130" x2="700" y2="130" stroke="#2e3345"/>
+  <line x1="110" y1="210" x2="700" y2="210" stroke="#2e3345"/>
+  <line x1="110" y1="270" x2="700" y2="270" stroke="#2e3345"/>
+  <!-- A acquires token 33 -->
+  <line x1="140" y1="130" x2="140" y2="50" stroke="#6c8cff" stroke-width="2"/>
+  <text x="146" y="92" fill="#6c8cff" font-size="11">grant, token 33</text>
+  <!-- GC pause -->
+  <rect x="190" y="38" width="250" height="24" rx="4" fill="#ffd93d22" stroke="#ffd93d"/>
+  <text x="315" y="55" fill="#ffd93d" font-size="11" text-anchor="middle">stop-the-world pause</text>
+  <!-- lease expiry -->
+  <line x1="300" y1="115" x2="300" y2="145" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="300" y="160" fill="#ff6b9d" font-size="10" text-anchor="middle">lease expires</text>
+  <!-- B acquires 34 -->
+  <line x1="340" y1="130" x2="340" y2="210" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="346" y="185" fill="#4ecdc4" font-size="11">grant, token 34</text>
+  <!-- B write -->
+  <line x1="390" y1="210" x2="390" y2="270" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="396" y="245" fill="#4ecdc4" font-size="11">write(token 34) accepted</text>
+  <!-- A write rejected -->
+  <path d="M470 50 L470 270" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="478" y="92" fill="#ff6b9d" font-size="11">A wakes, still thinks it leads</text>
+  <text x="478" y="255" fill="#ff6b9d" font-size="11">write(token 33) REJECTED</text>
+  <text x="478" y="290" fill="#8b90a0" font-size="10">storage remembers max token = 34</text>
+</svg>
+</div>
+
+<h3>4. Fencing tokens close the gap</h3>
+<p>The token must come from the same atomic operation that grants leadership and must strictly increase across grants. Coordination stores give you one for free: Kleppmann suggests ZooKeeper's <code>zxid</code> or the znode version, and etcd exposes the leader key's creation revision (<a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html">Kleppmann</a>, <a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/">etcd</a>). Google's Chubby built the same idea in as a <strong>sequencer</strong>, an opaque string holding the lock name, mode, and generation number that downstream servers check before acting. For servers that could not check sequencers, Chubby added a fallback called <strong>lock-delay</strong>: after a holder fails, the lock cannot be re-acquired for a bounded period (at most one minute), which the paper itself calls imperfect (<a href="https://www.usenix.org/legacy/event/osdi06/tech/full_papers/burrows/burrows_html/">Burrows, OSDI 2006</a>).</p>
+<p>The important design shift is that the <em>resource</em> enforces the fence, not the client. In a SQL store that is a conditional write:</p>
+<p><code>UPDATE jobs SET state = :s, fence = :token WHERE id = :id AND fence &lt; :token</code></p>
+<p>Zero rows updated means a newer leader already wrote, so the stale leader should abort and step down rather than retry. This is also why Kleppmann argues Redlock is unsuitable for correctness: it produces no monotonically increasing token to fence with (<a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html">Kleppmann</a>).</p>
+
+<h3>5. Avoiding the thundering herd</h3>
+<p>If every follower watches the same leader key, every follower stampedes the store the instant it disappears. ZooKeeper's recipe instead has each candidate create an <code>EPHEMERAL_SEQUENTIAL</code> znode; the lowest sequence number leads, and each other candidate watches only the node immediately before it, so "the removal of a node will only cause one client to wake up" (<a href="https://zookeeper.apache.org/doc/current/recipes.html">ZooKeeper Recipes</a>). Ephemeral nodes vanish when the session's lease-like timeout expires, which ties election to liveness. Libraries such as <a href="https://curator.apache.org/docs/recipes-leader-latch/">Apache Curator's LeaderLatch</a> package this recipe so you don't hand-roll it.</p>
+
+<div class="diagram-container">
+<h4>ZooKeeper election chain: each candidate watches only its predecessor</h4>
+<svg viewBox="0 0 720 170" width="100%" style="max-width:720px" font-family="Inter,sans-serif">
+  <rect x="0" y="0" width="720" height="170" fill="#1a1d27"/>
+  <rect x="290" y="12" width="140" height="30" rx="6" fill="#232733" stroke="#8b90a0"/>
+  <text x="360" y="32" fill="#e1e4ed" font-size="12" text-anchor="middle">/election</text>
+  <g font-size="11" text-anchor="middle">
+    <rect x="40" y="90" width="130" height="44" rx="8" fill="#6c8cff33" stroke="#6c8cff"/>
+    <text x="105" y="110" fill="#e1e4ed">n_0000000041</text><text x="105" y="125" fill="#6c8cff">LEADER</text>
+    <rect x="210" y="90" width="130" height="44" rx="8" fill="#232733" stroke="#4ecdc4"/>
+    <text x="275" y="110" fill="#e1e4ed">n_0000000042</text><text x="275" y="125" fill="#4ecdc4">watches 41</text>
+    <rect x="380" y="90" width="130" height="44" rx="8" fill="#232733" stroke="#4ecdc4"/>
+    <text x="445" y="110" fill="#e1e4ed">n_0000000043</text><text x="445" y="125" fill="#4ecdc4">watches 42</text>
+    <rect x="550" y="90" width="130" height="44" rx="8" fill="#232733" stroke="#4ecdc4"/>
+    <text x="615" y="110" fill="#e1e4ed">n_0000000044</text><text x="615" y="125" fill="#4ecdc4">watches 43</text>
+  </g>
+  <g stroke="#8b90a0" stroke-width="1"><line x1="360" y1="42" x2="105" y2="90"/><line x1="360" y1="42" x2="275" y2="90"/><line x1="360" y1="42" x2="445" y2="90"/><line x1="360" y1="42" x2="615" y2="90"/></g>
+  <g stroke="#ffd93d" stroke-width="1.5" fill="none"><path d="M210 112 L172 112"/><path d="M380 112 L342 112"/><path d="M550 112 L512 112"/></g>
+  <text x="360" y="160" fill="#8b90a0" font-size="10" text-anchor="middle">if 41's session expires, only 42 wakes up, re-lists children, and confirms it is now lowest</text>
+</svg>
+</div>
+
+<h2>Trade-offs</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Short leases</h4>
+    <ul>
+      <li>Fast failover after a crash</li>
+      <li>More renewal traffic on the coordination store</li>
+      <li>More false failovers from brief GC pauses or network blips</li>
+      <li>Gray &amp; Cheriton found short terms (around 10 s) near-optimal for their file workload</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Long leases</h4>
+    <ul>
+      <li>Fewer spurious leader changes</li>
+      <li>Longer unavailability when the leader really dies</li>
+      <li>Wider window in which a zombie can act if you skip fencing</li>
+      <li>More tolerance for clock-rate drift between nodes</li>
+    </ul>
+  </div>
+</div>
+<div class="callout"><strong>Efficiency vs correctness:</strong> If a duplicate leader only wastes work (two nodes send the same report), a lease alone is often fine. If a duplicate leader corrupts data or double-charges a customer, you need fencing at the resource, full stop. Kleppmann draws exactly this line between locks for efficiency and locks for correctness.</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Kubernetes control plane</div><div class="desc">kube-controller-manager and kube-scheduler run several replicas but use Lease objects in <code>coordination.k8s.io</code> so only one is active; kubelets also heartbeat through per-node Leases in <code>kube-node-lease</code> (<a href="https://kubernetes.io/docs/concepts/architecture/leases/">Kubernetes Leases</a>).</div></div>
+  <div class="use-case"><div class="label">Google Chubby</div><div class="desc">GFS and Bigtable-era systems used Chubby locks to elect masters, with sequencers so file servers could reject commands from a deposed master (<a href="https://www.usenix.org/legacy/event/osdi06/tech/full_papers/burrows/burrows_html/">Burrows</a>).</div></div>
+  <div class="use-case"><div class="label">ZooKeeper-based clusters</div><div class="desc">Services built on Curator recipes elect a single active coordinator using ephemeral sequential znodes and session timeouts (<a href="https://zookeeper.apache.org/doc/current/recipes.html">ZooKeeper Recipes</a>).</div></div>
+  <div class="use-case"><div class="label">etcd-backed singletons</div><div class="desc">Schedulers and operators campaign with the etcd Election API and guard writes with a transaction comparing the leader key's creation revision (<a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/">etcd API</a>).</div></div>
+</div>
+
+<h2>Design checklist</h2>
+<p>Elect through a consensus-backed store, never a single cache node. Tie leadership to a lease with a TTL comfortably larger than your worst observed pause. Have the leader stop work when it fails to renew within its renew deadline, before the lease can expire for others. Derive a monotonic token from the grant and pass it as a required argument to every protected write. Make the storage layer reject lower tokens with a conditional write. Watch predecessors, not the leader, to avoid stampedes. Finally, test it: pause the leader process (for example with <code>SIGSTOP</code>) past its lease and confirm its writes are refused when it resumes.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>Cary G. Gray and David R. Cheriton. <a href="https://web.stanford.edu/class/cs240/readings/leases.pdf">Leases: An Efficient Fault-Tolerant Mechanism for Distributed File Cache Consistency</a>. SOSP 1989. (<a href="https://dl.acm.org/doi/10.1145/74850.74870">ACM DL</a>)</li>
+  <li>Mike Burrows. <a href="https://www.usenix.org/legacy/event/osdi06/tech/full_papers/burrows/burrows_html/">The Chubby Lock Service for Loosely-Coupled Distributed Systems</a>. OSDI 2006.</li>
+  <li>Martin Kleppmann. <a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html">How to do distributed locking</a>. 2016.</li>
+  <li>Apache ZooKeeper. <a href="https://zookeeper.apache.org/doc/current/recipes.html">ZooKeeper Recipes and Solutions: Leader Election</a>.</li>
+  <li>Apache Curator. <a href="https://curator.apache.org/docs/recipes-leader-latch/">Leader Latch recipe</a>.</li>
+  <li>etcd. <a href="https://etcd.io/docs/v3.5/dev-guide/api_concurrency_reference_v3/">API reference: concurrency (Election and Lock services)</a>.</li>
+  <li>etcd. <a href="https://github.com/etcd-io/etcd/blob/main/client/v3/concurrency/election.go">client/v3/concurrency/election.go</a>.</li>
+  <li>etcd. <a href="https://etcd.io/docs/v3.5/learning/why/">etcd versus other key-value stores: notes on the usage of lock and lease</a>.</li>
+  <li>etcd. <a href="https://github.com/etcd-io/etcd/blob/main/contrib/lock/README.md">contrib/lock: reproducing the expired-lease problem and version validation</a>.</li>
+  <li>Kyle Kingsbury (Jepsen). <a href="https://jepsen.io/analyses/etcd-3.4.3">etcd 3.4.3 analysis</a>. 2020.</li>
+  <li>Kubernetes. <a href="https://kubernetes.io/docs/concepts/architecture/leases/">Leases (concepts)</a>.</li>
+  <li>Kubernetes. <a href="https://kubernetes.io/docs/reference/kubernetes-api/coordination/lease-v1/">Lease v1 API reference</a>.</li>
+  <li>Kubernetes client-go. <a href="https://pkg.go.dev/k8s.io/client-go/tools/leaderelection">tools/leaderelection package docs</a>.</li>
+</ol>
+</div>
+</body>
+</html>

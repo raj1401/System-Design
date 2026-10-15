@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XArray: Sparse Arrays Replacing the Radix Tree in Linux</title>
+<meta name="description" content="How the Linux XArray recast the radix tree as a lockable, RCU-readable sparse array of pointers with a built-in xa_lock, three search marks, multi-index entries for large folios, and an xa_state cursor API that now powers the page cache.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>XArray: Sparse Arrays Replacing the Radix Tree in Linux</h1>
+<p class="subtitle">Same 64-way tree underneath, a radically better contract on top: load and store, locking included, marks that prune whole subtrees.</p>
+<p class="meta">October 15, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>The <strong>XArray</strong> is an abstract data type that "behaves like a very large array of pointers", indexed by an <code>unsigned long</code>. Unlike a hash it can step to the next or previous entry cache-efficiently; unlike a resizable array it never copies data to grow; and lookups run under RCU without taking a lock. Its most important user is the page cache: every <code>struct address_space</code> keeps its cached folios in an XArray called <code>i_pages</code> (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>, <a href="https://github.com/torvalds/linux/blob/master/include/linux/fs.h">fs.h</a>).</p>
+<p>Matthew Wilcox's insight, presented at linux.conf.au 2018, was that the kernel's radix tree was a fine data structure with a bad API. He kept the tree, changed the metaphor from <em>tree</em> to <em>array</em>, moved locking inside, deleted the preload dance, made GFP flags explicit, and split the interface into a Normal and an Advanced API (<a href="https://lwn.net/Articles/745073/">LWN</a>, <a href="https://lca-kernel.ozlabs.org/2018-Wilcox-Replacing-the-Radix-Tree.pdf">LCA slides</a>). The implementation plus the page-cache conversion was merged for Linux 4.20 (<a href="https://kernelnewbies.org/Linux_4.20">KernelNewbies</a>, <a href="https://github.com/linux-surface/kernel/commit/dad4f140edaa3f6bb452b6913d41af1ffd672e45">merge commit</a>).</p>
+
+<div class="callout"><strong>The mindset shift:</strong> there is no "insert" or "delete". Every index always holds a value; an empty array simply has <code>NULL</code> at every index. Wilcox pushed back on LWN's own write-up for saying a store returns the previous value "if any", calling that "the kind of radix tree thinking that I'm trying to eradicate" (<a href="https://lwn.net/Articles/745607/">LWN comment</a>).</div>
+
+<h2>Why the radix tree API had to go</h2>
+<p>With the old interface, callers did their own locking, so nobody (not even slab defragmentation code) could know which lock protected a given tree. Inserts that might allocate under a spinlock needed <code>radix_tree_preload()</code> beforehand; Wilcox counted 42 preload call sites and replaced them with seven <code>xa_reserve()</code> calls (<a href="https://lwn.net/Articles/745613/">LWN comment</a>). Users also handled RCU-protected slot pointers directly, re-walked the tree from the root for every step, and juggled "exceptional entries". The XArray merge message summarises the fix: "locking as part of the API, specifying GFP flags at allocation time, eliminating preloading, less re-walking the tree, more efficient iterations and not exposing RCU-protected pointers to its users" (<a href="https://github.com/linux-surface/kernel/commit/dad4f140edaa3f6bb452b6913d41af1ffd672e45">merge commit</a>).</p>
+<p>Crucially, the conversion kept the radix-tree and XArray structures identical, so "a radix tree walk and an XArray walk will touch the same number of cachelines" and the page cache could be converted one function at a time (<a href="https://lwn.net/Articles/752042/">v11 cover letter</a>). Today <code>radix-tree.h</code> literally does <code>#define radix_tree_root xarray</code>, so the remaining radix-tree and IDR users run on XArray nodes (<a href="https://github.com/torvalds/linux/blob/master/include/linux/radix-tree.h">radix-tree.h</a>).</p>
+
+<h2>Under the hood: nodes, entries and the lock</h2>
+<p>The anchor is tiny: <code>struct xarray</code> holds just <code>xa_lock</code> (a spinlock), <code>xa_flags</code> and an RCU-protected <code>xa_head</code>. Interior <code>struct xa_node</code>s have <code>XA_CHUNK_SIZE</code> slots, where <code>XA_CHUNK_SHIFT</code> is 6 (64 slots) normally and 4 on <code>CONFIG_BASE_SMALL</code> builds. Each node records its <code>shift</code> (index bits remaining below it), its <code>offset</code> in the parent, counts of non-NULL and value entries, a parent pointer, and a <code>marks[3][]</code> bitmap with one bit per slot per mark (<a href="https://github.com/torvalds/linux/blob/master/include/linux/xarray.h">xarray.h</a>). Each level consumes 6 index bits, so a 1 GiB file of 4 KiB pages (2<sup>18</sup> indices) needs only three levels, and the full 64-bit index space at most eleven.</p>
+<p>The bottom two bits of every slot say what it holds: <code>00</code> a normal pointer (hence the 4-byte alignment rule), <code>x1</code> a value entry or tagged pointer (<code>xa_mk_value()</code> stores integers up to <code>LONG_MAX</code>), and <code>10</code> an <em>internal</em> entry. Internal entries are mostly pointers to child nodes, plus sibling entries (0&ndash;62), a retry entry (256) and a zero entry (257); errors are encoded in the negative internal range and only ever returned, never stored (<a href="https://github.com/torvalds/linux/blob/master/include/linux/xarray.h">xarray.h</a>).</p>
+
+<div class="diagram-container">
+<h4>Looking up page-cache index 0x1234A in i_pages</h4>
+<svg width="760" height="330" viewBox="0 0 760 330" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ar1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+  </defs>
+  <rect x="20" y="20" width="200" height="64" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="120" y="44" fill="#6c8cff" font-size="13" text-anchor="middle">struct xarray i_pages</text>
+  <text x="120" y="64" fill="#8b90a0" font-size="11" text-anchor="middle">xa_lock | xa_flags | xa_head</text>
+  <text x="300" y="36" fill="#8b90a0" font-size="11">index 0x1234A = 0b 010010 001101 001010</text>
+  <text x="300" y="56" fill="#ffd93d" font-size="11">shift 12 picks 18  |  shift 6 picks 13  |  shift 0 picks 10</text>
+  <line x1="120" y1="84" x2="120" y2="112" stroke="#6c8cff" stroke-width="2" marker-end="url(#ar1)"/>
+  <rect x="20" y="116" width="720" height="44" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="34" y="143" fill="#e1e4ed" font-size="12">xa_node shift=12</text>
+  <rect x="190" y="124" width="28" height="28" rx="4" fill="#232733" stroke="#8b90a0"/>
+  <rect x="222" y="124" width="28" height="28" rx="4" fill="#232733" stroke="#8b90a0"/>
+  <rect x="254" y="124" width="56" height="28" rx="4" fill="#232733" stroke="#4ecdc4"/>
+  <text x="282" y="143" fill="#4ecdc4" font-size="11" text-anchor="middle">[18]</text>
+  <text x="330" y="143" fill="#8b90a0" font-size="11">… 64 slots, marks[3][64 bits]</text>
+  <line x1="282" y1="160" x2="282" y2="188" stroke="#6c8cff" stroke-width="2" marker-end="url(#ar1)"/>
+  <rect x="20" y="192" width="720" height="44" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="34" y="219" fill="#e1e4ed" font-size="12">xa_node shift=6</text>
+  <rect x="190" y="200" width="28" height="28" rx="4" fill="#232733" stroke="#8b90a0"/>
+  <rect x="222" y="200" width="56" height="28" rx="4" fill="#232733" stroke="#4ecdc4"/>
+  <text x="250" y="219" fill="#4ecdc4" font-size="11" text-anchor="middle">[13]</text>
+  <text x="300" y="219" fill="#8b90a0" font-size="11">internal entry (bits 10) = child node pointer</text>
+  <line x1="250" y1="236" x2="250" y2="264" stroke="#6c8cff" stroke-width="2" marker-end="url(#ar1)"/>
+  <rect x="20" y="268" width="720" height="50" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="34" y="298" fill="#e1e4ed" font-size="12">leaf shift=0</text>
+  <rect x="150" y="278" width="80" height="30" rx="4" fill="#232733" stroke="#4ecdc4"/>
+  <text x="190" y="298" fill="#4ecdc4" font-size="11" text-anchor="middle">[10] folio*</text>
+  <rect x="240" y="278" width="110" height="30" rx="4" fill="#232733" stroke="#ffd93d"/>
+  <text x="295" y="298" fill="#ffd93d" font-size="11" text-anchor="middle">value: shadow</text>
+  <rect x="360" y="278" width="110" height="30" rx="4" fill="#232733" stroke="#ff6b9d"/>
+  <text x="415" y="298" fill="#ff6b9d" font-size="11" text-anchor="middle">sibling (multi)</text>
+  <rect x="480" y="278" width="90" height="30" rx="4" fill="#232733" stroke="#8b90a0"/>
+  <text x="525" y="298" fill="#8b90a0" font-size="11" text-anchor="middle">NULL</text>
+  <text x="590" y="298" fill="#8b90a0" font-size="11">00 ptr | x1 value | 10 internal</text>
+</svg>
+</div>
+
+<h3>Locking: xa_lock plus RCU</h3>
+<p>With the Normal API you never take a lock yourself. <code>xa_load()</code>, <code>xa_find()</code> and the <code>xa_for_each*()</code> iterators take the RCU read lock; <code>xa_store()</code>, <code>xa_erase()</code>, <code>xa_cmpxchg()</code>, <code>xa_alloc()</code> and the mark setters take <code>xa_lock</code> internally. Variants such as <code>xa_store_bh()</code>/<code>xa_store_irq()</code>, and flags <code>XA_FLAGS_LOCK_BH</code>/<code>XA_FLAGS_LOCK_IRQ</code>, handle arrays modified from softirq or hardirq context. Double-underscore functions like <code>__xa_store()</code> expect the lock to be held already, which lets callers extend the critical section to cover their own counters (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>). When a node is removed, its slots are replaced with retry entries so concurrent RCU walkers restart from the head instead of reading freed memory (<a href="https://docs.kernel.org/core-api/xarray.html">xas_free_nodes</a>).</p>
+<p>Memory allocation is the subtle part. A store first tries <code>GFP_NOWAIT</code> while holding the spinlock; if that fails, the xa_state records <code>-ENOMEM</code>, the caller drops the lock, and <code>xas_nomem()</code> allocates with the caller's real GFP flags and caches one node in the state for the retry, guaranteeing forward progress (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>).</p>
+
+<h2>The Advanced API: xa_state as a cursor</h2>
+<p>The Normal API is built entirely on the Advanced API, which is GPL-only and does no locking for you. Its core is <code>struct xa_state</code>, declared on the stack with <code>XA_STATE(xas, xa, index)</code>: it remembers the array, the index, the current node and offset, a spare allocated node, and an optional update callback. Because the cursor stays at the leaf, you can compose <code>xas_load()</code>, <code>xas_store()</code>, <code>xas_set_mark()</code>, <code>xas_next()</code> and <code>xas_find()</code> without re-walking from the root, and errors are sticky, so you only check <code>xas_error()</code> at the end. If you must drop the lock mid-iteration, <code>xas_pause()</code> makes the state safe to resume. The docs note that <code>xa_for_each()</code> is O(n log n) while <code>xas_for_each()</code> is O(n) (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>).</p>
+<p>The page cache's lockless lookup, <code>filemap_get_entry()</code>, shows the pattern. Under <code>rcu_read_lock()</code> it calls <code>xas_load()</code>, restarts on <code>xas_retry()</code>, returns value entries (shadow entries of evicted pages, or shmem swap entries) as-is, takes a speculative reference with <code>folio_try_get()</code>, and then calls <code>xas_reload()</code> to confirm the slot still points at the same folio, retrying if not (<a href="https://github.com/torvalds/linux/blob/master/mm/filemap.c">mm/filemap.c</a>). No <code>xa_lock</code> is touched on the read-hit path.</p>
+
+<h2>Search marks: pruning whole subtrees</h2>
+<p>Each entry carries three independent mark bits (<code>XA_MARK_0..2</code>). <code>xas_set_mark()</code> sets the bit on the entry <em>and walks up setting it on every ancestor</em>; clearing walks back up clearing ancestors that no longer have any marked child. That aggregation lets <code>xa_for_each_marked()</code> and <code>xa_marked()</code> skip any subtree whose parent bit is clear. The docs are explicit that you cannot efficiently iterate <em>unmarked</em> entries (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>). The page cache maps the three marks to <code>PAGECACHE_TAG_DIRTY</code>, <code>PAGECACHE_TAG_WRITEBACK</code> and <code>PAGECACHE_TAG_TOWRITE</code>, so writeback visits only dirty folios in a file with millions of clean ones (<a href="https://github.com/torvalds/linux/blob/master/include/linux/fs.h">fs.h</a>). Allocating arrays (<code>XA_FLAGS_ALLOC</code>) reserve mark 0 as <code>XA_FREE_MARK</code> to find free IDs for <code>xa_alloc()</code>.</p>
+
+<div class="diagram-container">
+<h4>Mark propagation: writeback skips clean subtrees</h4>
+<svg width="760" height="270" viewBox="0 0 760 270" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ar2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="290" y="20" width="180" height="50" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="380" y="42" fill="#e1e4ed" font-size="12" text-anchor="middle">root node</text>
+  <text x="380" y="60" fill="#ff6b9d" font-size="11" text-anchor="middle">DIRTY bits: 1 0 1 0</text>
+  <line x1="320" y1="70" x2="120" y2="118" stroke="#ff6b9d" stroke-width="2"/>
+  <line x1="360" y1="70" x2="300" y2="118" stroke="#2e3345" stroke-width="2" stroke-dasharray="5,4"/>
+  <line x1="400" y1="70" x2="470" y2="118" stroke="#ff6b9d" stroke-width="2"/>
+  <line x1="440" y1="70" x2="650" y2="118" stroke="#2e3345" stroke-width="2" stroke-dasharray="5,4"/>
+  <rect x="40" y="120" width="160" height="50" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="120" y="142" fill="#e1e4ed" font-size="12" text-anchor="middle">child A</text>
+  <text x="120" y="160" fill="#ff6b9d" font-size="11" text-anchor="middle">visit</text>
+  <rect x="220" y="120" width="160" height="50" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="300" y="142" fill="#8b90a0" font-size="12" text-anchor="middle">child B</text>
+  <text x="300" y="160" fill="#8b90a0" font-size="11" text-anchor="middle">skipped (bit clear)</text>
+  <rect x="390" y="120" width="160" height="50" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="470" y="142" fill="#e1e4ed" font-size="12" text-anchor="middle">child C</text>
+  <text x="470" y="160" fill="#ff6b9d" font-size="11" text-anchor="middle">visit</text>
+  <rect x="570" y="120" width="160" height="50" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="650" y="142" fill="#8b90a0" font-size="12" text-anchor="middle">child D</text>
+  <text x="650" y="160" fill="#8b90a0" font-size="11" text-anchor="middle">skipped (bit clear)</text>
+  <line x1="120" y1="170" x2="120" y2="200" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <line x1="470" y1="170" x2="470" y2="200" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="60" y="204" width="120" height="30" rx="6" fill="#232733" stroke="#4ecdc4"/>
+  <text x="120" y="224" fill="#4ecdc4" font-size="11" text-anchor="middle">dirty folio</text>
+  <rect x="410" y="204" width="120" height="30" rx="6" fill="#232733" stroke="#4ecdc4"/>
+  <text x="470" y="224" fill="#4ecdc4" font-size="11" text-anchor="middle">dirty folio</text>
+  <text x="380" y="258" fill="#8b90a0" font-size="11" text-anchor="middle">xas_set_mark sets the bit on the entry and every ancestor; xas_find_marked descends only where bits are set</text>
+</svg>
+</div>
+
+<h2>Multi-index entries and large folios</h2>
+<p>An unusual XArray feature is an entry that occupies a naturally aligned power-of-two range of indices: store to any index and all of them change; mark any index and the whole range is marked. You create one with <code>XA_STATE_ORDER()</code> or <code>xas_set_order()</code> followed by <code>xas_store()</code>. Internally, an order-<em>n</em> entry lives at the node whose shift is <code>n - (n % 6)</code> and spans one canonical slot plus <code>2<sup>n % 6</sup> - 1</code> sibling entries pointing back at it (<a href="https://github.com/torvalds/linux/blob/master/include/linux/xarray.h">xarray.h</a>). A 2 MiB folio (order 9) therefore takes eight slots in a shift-6 node instead of 512 leaf slots across eight leaf nodes; the docs note that tying 512 entries together "will save over 4kB" (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>).</p>
+<p>This is exactly what the folio-based page cache needs: <code>__filemap_add_folio()</code> stores each folio with <code>XA_STATE_ORDER(xas, &amp;mapping-&gt;i_pages, index, folio_order(folio))</code> (<a href="https://github.com/torvalds/linux/blob/master/mm/filemap.c">mm/filemap.c</a>). Splitting a large folio uses <code>xas_split_alloc()</code> + <code>xas_split()</code> for a uniform split, or <code>xas_try_split()</code> to split non-uniformly around one index, which for an order-9 entry needs one new node instead of eight (<a href="https://docs.kernel.org/core-api/xarray.html">kernel docs</a>).</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">XArray</h4>
+    <ul>
+      <li>Index to pointer; fixed 64-way radix nodes</li>
+      <li>Best with densely clustered indices (file offsets, IDs)</li>
+      <li>Ranges only as aligned power-of-two multi-index entries</li>
+      <li>RCU reads always; writers on internal xa_lock</li>
+      <li>Three aggregated search marks per entry</li>
+      <li>Flagship user: page cache (<code>i_pages</code>)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">Maple tree</h4>
+    <ul>
+      <li>Arbitrary non-overlapping ranges in a B-tree</li>
+      <li>Pivots in ~256-byte nodes; handles sparse ranges well</li>
+      <li>Optional gap tracking to find free ranges</li>
+      <li>RCU mode opt-in; lock may be external (mmap_lock)</li>
+      <li>Erase may allocate; preallocation API for atomic paths</li>
+      <li>Flagship user: process VMAs (<code>mm_mt</code>)</li>
+    </ul>
+  </div>
+</div>
+<p>The two are siblings, not rivals: both were shaped by Wilcox, share the RCU-plus-spinlock Normal API style and even the <code>xa_mk_value()</code> convention, but the maple tree is a range B-tree optimised for VMAs while the XArray is a radix array optimised for clustered integer indices (<a href="https://docs.kernel.org/core-api/maple_tree.html">maple tree docs</a>). Hashing keys into an XArray is explicitly discouraged; scattered indices waste nodes.</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Page cache</div><div class="desc"><code>address_space-&gt;i_pages</code> maps file offsets to folios, shadow entries and shmem swap entries; marks drive dirty and writeback tracking.</div></div>
+  <div class="use-case"><div class="label">Workingset shadows</div><div class="desc"><code>xas_set_update()</code> callbacks let the workingset code track nodes holding only shadow entries so they can be reclaimed.</div></div>
+  <div class="use-case"><div class="label">ID allocation</div><div class="desc"><code>xa_alloc()</code> / <code>xa_alloc_cyclic()</code> replace the IDR, which kernel docs now mark deprecated; <code>struct ida</code> wraps an XArray.</div></div>
+  <div class="use-case"><div class="label">Large folios</div><div class="desc">Multi-index entries let one slot range represent a 2 MiB or larger folio, with split helpers for truncation and reclaim.</div></div>
+  <div class="use-case"><div class="label">Device memory</div><div class="desc"><code>mm/memremap.c</code> keeps ZONE_DEVICE <code>dev_pagemap</code> lookups in a global <code>DEFINE_XARRAY(pgmap_array)</code>.</div></div>
+  <div class="use-case"><div class="label">Legacy radix trees</div><div class="desc"><code>radix_tree_root</code> is now a macro for <code>struct xarray</code>, so every remaining radix-tree user runs on XArray nodes.</div></div>
+</div>
+
+<div class="callout"><strong>Design lesson:</strong> the XArray changed almost nothing in memory and everything in the contract. By owning the lock, the allocation retry and the RCU publication rules, the data structure became safe to use by default, and those same guarantees are what made lockless page-cache lookups and multi-index large folios practical to build on top.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/core-api/xarray.html">XArray, Matthew Wilcox, The Linux Kernel documentation</a></li>
+  <li><a href="https://lwn.net/Articles/745073/">The XArray data structure, Jonathan Corbet, LWN.net (Jan 2018)</a></li>
+  <li><a href="https://lwn.net/Articles/745607/">Comment by Matthew Wilcox on The XArray data structure, LWN.net</a></li>
+  <li><a href="https://lwn.net/Articles/745613/">Comment by Matthew Wilcox on preload vs xa_reserve, LWN.net</a></li>
+  <li><a href="https://lca-kernel.ozlabs.org/2018-Wilcox-Replacing-the-Radix-Tree.pdf">Replacing the Radix Tree, Matthew Wilcox, linux.conf.au 2018 Kernel Miniconf slides</a></li>
+  <li><a href="https://lwn.net/Articles/752042/">[PATCH v11 00/63] Convert page cache to XArray, LWN.net</a></li>
+  <li><a href="https://lwn.net/Articles/757763/">[PATCH v14 00/74] Convert page cache to XArray, LWN.net</a></li>
+  <li><a href="https://github.com/linux-surface/kernel/commit/dad4f140edaa3f6bb452b6913d41af1ffd672e45">Merge branch xarray of git://git.infradead.org/users/willy/linux-dax (mirror)</a></li>
+  <li><a href="https://kernelnewbies.org/Linux_4.20">Linux 4.20, KernelNewbies</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/xarray.h">include/linux/xarray.h, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/lib/xarray.c">lib/xarray.c, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/mm/filemap.c">mm/filemap.c, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/fs.h">include/linux/fs.h, Linux kernel source</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/include/linux/radix-tree.h">include/linux/radix-tree.h, Linux kernel source</a></li>
+  <li><a href="https://docs.kernel.org/core-api/idr.html">ID Allocation, The Linux Kernel documentation</a></li>
+  <li><a href="https://docs.kernel.org/core-api/maple_tree.html">Maple Tree, Liam R. Howlett, The Linux Kernel documentation</a></li>
+</ol>
+</div>
+</body>
+</html>

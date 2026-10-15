@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Caching Strategies: Cache-Aside, Write-Through, Write-Behind, and Stampede Protection</title>
+<meta name="description" content="How cache-aside, read-through, write-through, and write-behind caching trade freshness, latency, and durability, and how leases, single-flight, and probabilistic early expiration stop stale sets and cache stampedes.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Caching Strategies: Cache-Aside, Write-Through, Write-Behind, and Stampede Protection</h1>
+<p class="subtitle">Where the cache sits on the read and write paths decides how fresh, fast, and fragile your system is.</p>
+<p class="meta">October 15, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>An application cache (Memcached, Redis, an in-process map) keeps hot copies of data that lives authoritatively in a slower store, usually a database. The hard part isn't storing bytes in RAM; it's choosing <em>when</em> the cache is filled, <em>when</em> it is updated or invalidated after a write, and <em>what happens</em> when a popular entry disappears. Four patterns cover most designs: <strong>cache-aside</strong> (lazy loading), <strong>read-through</strong>, <strong>write-through</strong>, and <strong>write-behind</strong> (write-back). On top of those, any high-traffic cache needs protection against two classic failure modes: <strong>stale sets</strong> that leave old data cached after a write, and <strong>stampedes</strong> (thundering herds) where many requests miss at once and pile onto the database.</p>
+
+<div class="callout"><strong>Rule of thumb:</strong> the database stays the system of record and the cache holds derived, disposable copies. Every pattern below is a different answer to the question of how far behind that copy is allowed to fall, and who repairs it when it does. Microsoft's guidance puts it the same way: the application must be able to fall back to the original data store if the cache is unavailable (<a href="https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching">Azure caching guidance</a>).</div>
+
+<h2>The four patterns</h2>
+
+<h3>Cache-aside (lazy loading)</h3>
+<p>The application talks to both the cache and the database. On a read it checks the cache first; on a miss it reads the database, stores the result in the cache with a TTL, and returns it. On a write it updates the database and then <em>deletes</em> the cached key, so the next read repopulates it (<a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside">Azure Cache-Aside pattern</a>). AWS calls this the most common caching strategy: only requested data ends up in the cache, and a cache node failure is not fatal because the database still answers (<a href="https://docs.aws.amazon.com/pdfs/whitepapers/latest/database-caching-strategies-using-redis/database-caching-strategies-using-redis.pdf">AWS whitepaper</a>). The cost is a slow first read after every miss and a window where readers may briefly see stale data or a miss right after a write.</p>
+<p>Facebook's memcache tier is the canonical large-scale example: a demand-filled look-aside cache where web servers delete keys after a database write, preferring deletes to sets because deletes are idempotent (<a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">Nishtala et al., NSDI 2013</a>).</p>
+
+<h3>Read-through</h3>
+<p>Same lazy fill, but the cache library or service owns the loader: the application only calls <code>cache.get(key)</code> and the cache fetches from the store on a miss. Commercial caches often provide read-through and write-through natively; cache-aside is how you emulate read-through when your cache only offers <code>get</code>/<code>set</code> (<a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside">Azure</a>).</p>
+
+<h3>Write-through</h3>
+<p>Every write updates the database and the cache in the same operation, and the write only reports success once both are done. Readers see the new value immediately after a successful write, at the price of higher write latency and more failure handling (what if the DB commits but the cache update fails?) (<a href="https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching">Azure caching guidance</a>). AWS notes write-through is almost always paired with lazy loading so that expired or evicted keys still get refilled, and warns it can fill the cache with data nobody reads unless you also set TTLs (<a href="https://docs.aws.amazon.com/pdfs/whitepapers/latest/database-caching-strategies-using-redis/database-caching-strategies-using-redis.pdf">AWS whitepaper</a>). Microsoft's reference architecture for Azure SQL plus Redis uses a dedicated write coordinator and a durable outbox to repair the cache when the second step fails (<a href="https://learn.microsoft.com/en-us/azure/architecture/databases/architecture/write-through-caching-azure-sql-managed-redis">Azure write-through architecture</a>).</p>
+
+<h3>Write-behind (write-back)</h3>
+<p>Writes land in the cache and are acknowledged right away; the cache flushes them to the database asynchronously after a delay, coalescing repeated updates to the same key and batching them. Oracle Coherence implements this with a configurable write-behind delay and batched <code>storeAll</code> calls (<a href="https://docs.oracle.com/en/middleware/standalone/coherence/15.1.1/develop-applications/caching-data-sources.html">Oracle Coherence docs</a>). Writes become very fast and the database sees far less traffic, but for that window the cache, not the database, holds the only copy of the newest data. A crash before flush loses writes unless the cache itself is replicated or persisted.</p>
+
+<div class="diagram-container">
+<h4>Read and write paths for each pattern</h4>
+<svg viewBox="0 0 760 360" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+    <marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ffd93d"/></marker>
+  </defs>
+  <!-- Column titles -->
+  <text x="125" y="22" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">Cache-aside</text>
+  <text x="380" y="22" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">Write-through</text>
+  <text x="635" y="22" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">Write-behind</text>
+  <!-- Cache-aside -->
+  <rect x="65" y="40" width="120" height="40" rx="8" fill="#232733" stroke="#6c8cff"/><text x="125" y="65" fill="#e1e4ed" font-size="13" text-anchor="middle">App</text>
+  <rect x="10" y="170" width="105" height="40" rx="8" fill="#232733" stroke="#4ecdc4"/><text x="62" y="195" fill="#e1e4ed" font-size="13" text-anchor="middle">Cache</text>
+  <rect x="140" y="170" width="105" height="40" rx="8" fill="#232733" stroke="#ffd93d"/><text x="192" y="195" fill="#e1e4ed" font-size="13" text-anchor="middle">Database</text>
+  <line x1="95" y1="82" x2="65" y2="166" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="38" y="120" fill="#8b90a0" font-size="11">1 get</text>
+  <line x1="150" y1="82" x2="185" y2="166" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="172" y="112" fill="#8b90a0" font-size="11">2 miss: read</text>
+  <line x1="122" y1="82" x2="85" y2="166" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#a2)"/>
+  <text x="96" y="150" fill="#ff6b9d" font-size="11">3 set / delete</text>
+  <text x="125" y="240" fill="#8b90a0" font-size="11" text-anchor="middle">App owns both stores.</text>
+  <text x="125" y="256" fill="#8b90a0" font-size="11" text-anchor="middle">Write: update DB, delete key.</text>
+  <!-- Write-through -->
+  <rect x="320" y="40" width="120" height="40" rx="8" fill="#232733" stroke="#6c8cff"/><text x="380" y="65" fill="#e1e4ed" font-size="13" text-anchor="middle">App</text>
+  <rect x="320" y="120" width="120" height="40" rx="8" fill="#232733" stroke="#4ecdc4"/><text x="380" y="145" fill="#e1e4ed" font-size="13" text-anchor="middle">Cache</text>
+  <rect x="320" y="200" width="120" height="40" rx="8" fill="#232733" stroke="#ffd93d"/><text x="380" y="225" fill="#e1e4ed" font-size="13" text-anchor="middle">Database</text>
+  <line x1="380" y1="82" x2="380" y2="116" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="380" y1="162" x2="380" y2="196" stroke="#ffd93d" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="392" y="184" fill="#ffd93d" font-size="11">sync write</text>
+  <text x="380" y="262" fill="#8b90a0" font-size="11" text-anchor="middle">Ack only after both commit.</text>
+  <text x="380" y="278" fill="#8b90a0" font-size="11" text-anchor="middle">Fresh reads, slower writes.</text>
+  <!-- Write-behind -->
+  <rect x="575" y="40" width="120" height="40" rx="8" fill="#232733" stroke="#6c8cff"/><text x="635" y="65" fill="#e1e4ed" font-size="13" text-anchor="middle">App</text>
+  <rect x="575" y="120" width="120" height="40" rx="8" fill="#232733" stroke="#4ecdc4"/><text x="635" y="145" fill="#e1e4ed" font-size="13" text-anchor="middle">Cache + queue</text>
+  <rect x="575" y="200" width="120" height="40" rx="8" fill="#232733" stroke="#ffd93d"/><text x="635" y="225" fill="#e1e4ed" font-size="13" text-anchor="middle">Database</text>
+  <line x1="635" y1="82" x2="635" y2="116" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="647" y="104" fill="#6c8cff" font-size="11">ack fast</text>
+  <line x1="635" y1="162" x2="635" y2="196" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#a2)"/>
+  <text x="647" y="184" fill="#ff6b9d" font-size="11">async batch flush</text>
+  <text x="635" y="262" fill="#8b90a0" font-size="11" text-anchor="middle">Coalesces updates.</text>
+  <text x="635" y="278" fill="#8b90a0" font-size="11" text-anchor="middle">Data at risk until flushed.</text>
+  <!-- Legend -->
+  <rect x="10" y="310" width="740" height="38" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+  <line x1="30" y1="329" x2="60" y2="329" stroke="#6c8cff" stroke-width="2"/><text x="68" y="333" fill="#8b90a0" font-size="11">request path</text>
+  <line x1="190" y1="329" x2="220" y2="329" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="5,4"/><text x="228" y="333" fill="#8b90a0" font-size="11">deferred or follow-up step</text>
+  <line x1="420" y1="329" x2="450" y2="329" stroke="#ffd93d" stroke-width="2"/><text x="458" y="333" fill="#8b90a0" font-size="11">synchronous persistence</text>
+</svg>
+</div>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Lazy patterns (cache-aside, read-through)</h4>
+    <ul>
+      <li>Cache holds only data that was actually requested</li>
+      <li>Survives cache loss; database still answers</li>
+      <li>First read after a miss is slow</li>
+      <li>Brief staleness window after writes</li>
+      <li>Vulnerable to stampedes on hot keys</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">Eager patterns (write-through, write-behind)</h4>
+    <ul>
+      <li>Read-after-write freshness on cached paths</li>
+      <li>Write-through adds latency to every write</li>
+      <li>Write-behind gives the fastest writes, weakest durability</li>
+      <li>Can fill memory with data nobody reads</li>
+      <li>Still need lazy fill for evicted or expired keys</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Deeper dive: where caches go wrong</h2>
+
+<h3>Stale sets</h3>
+<p>Cache-aside has a subtle race. Reader A misses and reads value v1 from the database. Before A writes it into the cache, writer B updates the row to v2 and deletes the key. Then A's delayed <code>set(v1)</code> lands, and the cache now holds old data indefinitely, until the TTL expires. Facebook fixed this with <strong>leases</strong>: on a miss, memcached hands the client a 64-bit token bound to that key, and the later <code>set</code> must present it. A delete invalidates the token, so the late, stale <code>set</code> is rejected, much like load-link/store-conditional (<a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">NSDI 2013</a>). The same paper describes tailing the MySQL commit log to issue invalidations, so caches can be resynchronized from committed transactions rather than trusting every web server to remember its deletes.</p>
+
+<h3>Stampedes (thundering herds)</h3>
+<p>When a hot key expires or is deleted, every concurrent request misses at the same instant and recomputes the same value against the database. Under load this can turn into congestion collapse: recomputation slows down, so more requests pile up behind it (<a href="https://vldb.org/pvldb/vol8/p886-vattani.pdf">Vattani et al., VLDB 2015</a>). Three families of defenses are common, and they combine well:</p>
+<p><strong>1. One recompute per key.</strong> Make only one caller rebuild the value while others wait or get a slightly stale copy. Facebook's lease variant returns a token for a key at most once every 10 seconds; other requesters are told to wait briefly and retry, by which time the value is usually back. On keys prone to herds, peak database queries dropped from 17K/s to 1.3K/s (<a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">NSDI 2013</a>). Inside one process, Go's <code>singleflight.Group.Do</code> does the same thing: only one execution is in flight per key, and duplicate callers wait and share the result (<a href="https://pkg.go.dev/golang.org/x/sync/singleflight">golang.org/x/sync/singleflight</a>).</p>
+<p><strong>2. Refresh before expiry.</strong> XFetch (probabilistic early expiration) has each reader independently decide to recompute a little early, with probability rising as expiry nears: recompute if <code>now - delta * beta * ln(rand()) &gt;= expiry</code>, where <code>delta</code> is how long the last recompute took and <code>beta</code> defaults to 1. The authors prove the exponential form is optimal and needs no tuning to the request rate (<a href="https://vldb.org/pvldb/vol8/p886-vattani.pdf">VLDB 2015</a>). The Internet Archive's RedisConf 2017 benchmarks found that XFetch combined with a recompute lock performed best of the strategies tested, with no simultaneous recomputes (<a href="https://github.com/internetarchive/xfetch/">internetarchive/xfetch</a>).</p>
+<p><strong>3. Serve stale while refreshing.</strong> HTTP formalized this with <code>stale-while-revalidate</code> (serve an expired response while revalidating in the background) and <code>stale-if-error</code> (serve stale if the origin returns a 5xx) in <a href="https://www.rfc-editor.org/rfc/rfc5861.html">RFC 5861</a>. Application caches borrow the idea by storing a soft expiry inside the value and a longer hard TTL on the key.</p>
+
+<div class="diagram-container">
+<h4>Hot key expiry: stampede versus single-flight refresh</h4>
+<svg viewBox="0 0 760 300" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="b1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+    <marker id="b2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4ecdc4"/></marker>
+    <marker id="b3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <text x="185" y="22" fill="#ff6b9d" font-size="14" font-weight="600" text-anchor="middle">Without protection</text>
+  <text x="565" y="22" fill="#4ecdc4" font-size="14" font-weight="600" text-anchor="middle">Lease / singleflight / XFetch</text>
+  <line x1="380" y1="35" x2="380" y2="285" stroke="#2e3345" stroke-dasharray="4,4"/>
+  <!-- Left: many requests -->
+  <g fill="#232733" stroke="#6c8cff">
+    <rect x="20" y="45" width="60" height="26" rx="6"/><rect x="20" y="81" width="60" height="26" rx="6"/><rect x="20" y="117" width="60" height="26" rx="6"/><rect x="20" y="153" width="60" height="26" rx="6"/><rect x="20" y="189" width="60" height="26" rx="6"/>
+  </g>
+  <g fill="#e1e4ed" font-size="11" text-anchor="middle">
+    <text x="50" y="62">req</text><text x="50" y="98">req</text><text x="50" y="134">req</text><text x="50" y="170">req</text><text x="50" y="206">req</text>
+  </g>
+  <rect x="140" y="45" width="80" height="170" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="180" y="125" fill="#e1e4ed" font-size="12" text-anchor="middle">Cache</text>
+  <text x="180" y="142" fill="#ff6b9d" font-size="11" text-anchor="middle">key expired</text>
+  <rect x="270" y="95" width="90" height="70" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="315" y="127" fill="#e1e4ed" font-size="12" text-anchor="middle">Database</text>
+  <text x="315" y="145" fill="#ff6b9d" font-size="11" text-anchor="middle">overloaded</text>
+  <g stroke="#ff6b9d" stroke-width="1.6" marker-end="url(#b1)">
+    <path d="M82,58 C200,58 230,100 266,108" fill="none"/>
+    <path d="M82,94 C200,94 230,115 266,118" fill="none"/>
+    <path d="M82,130 C200,130 230,130 266,130" fill="none"/>
+    <path d="M82,166 C200,166 230,145 266,142" fill="none"/>
+    <path d="M82,202 C200,202 230,160 266,152" fill="none"/>
+  </g>
+  <text x="185" y="245" fill="#8b90a0" font-size="11" text-anchor="middle">N concurrent misses become N identical DB queries.</text>
+  <text x="185" y="262" fill="#8b90a0" font-size="11" text-anchor="middle">Slower recompute means even more pile-up.</text>
+  <!-- Right -->
+  <g fill="#232733" stroke="#6c8cff">
+    <rect x="400" y="45" width="60" height="26" rx="6"/><rect x="400" y="81" width="60" height="26" rx="6"/><rect x="400" y="117" width="60" height="26" rx="6"/><rect x="400" y="153" width="60" height="26" rx="6"/><rect x="400" y="189" width="60" height="26" rx="6"/>
+  </g>
+  <g fill="#e1e4ed" font-size="11" text-anchor="middle">
+    <text x="430" y="62">req</text><text x="430" y="98">req</text><text x="430" y="134">req</text><text x="430" y="170">req</text><text x="430" y="206">req</text>
+  </g>
+  <rect x="520" y="45" width="90" height="170" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="565" y="118" fill="#e1e4ed" font-size="12" text-anchor="middle">Cache</text>
+  <text x="565" y="135" fill="#4ecdc4" font-size="11" text-anchor="middle">1 lease issued</text>
+  <text x="565" y="150" fill="#8b90a0" font-size="11" text-anchor="middle">others wait</text>
+  <text x="565" y="165" fill="#8b90a0" font-size="11" text-anchor="middle">or get stale</text>
+  <rect x="650" y="95" width="95" height="70" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="697" y="127" fill="#e1e4ed" font-size="12" text-anchor="middle">Database</text>
+  <text x="697" y="145" fill="#4ecdc4" font-size="11" text-anchor="middle">1 query</text>
+  <g stroke="#8b90a0" stroke-width="1.4" marker-end="url(#b3)">
+    <line x1="462" y1="58" x2="516" y2="80"/><line x1="462" y1="94" x2="516" y2="105"/><line x1="462" y1="166" x2="516" y2="155"/><line x1="462" y1="202" x2="516" y2="180"/>
+  </g>
+  <line x1="462" y1="130" x2="516" y2="130" stroke="#4ecdc4" stroke-width="2" marker-end="url(#b2)"/>
+  <line x1="612" y1="130" x2="646" y2="130" stroke="#4ecdc4" stroke-width="2" marker-end="url(#b2)"/>
+  <text x="565" y="245" fill="#8b90a0" font-size="11" text-anchor="middle">One caller recomputes; the rest wait briefly or serve</text>
+  <text x="565" y="262" fill="#8b90a0" font-size="11" text-anchor="middle">a stale copy. XFetch refreshes before expiry entirely.</text>
+</svg>
+</div>
+
+<h3>TTLs, eviction, and memory pressure</h3>
+<p>TTLs bound staleness for anything invalidation misses; adding a little random jitter to TTLs keeps keys written together from all expiring together. When memory fills, the eviction policy decides what goes. Redis offers <code>allkeys-lru</code>, <code>allkeys-lfu</code>, the <code>volatile-*</code> variants that only evict keys with a TTL, and <code>noeviction</code>; its docs recommend <code>allkeys-lru</code> as a good default when a subset of keys is much hotter than the rest, and LFU (since Redis 4.0) when you want frequently read keys to survive bursts of cold reads (<a href="https://redis.io/docs/latest/develop/reference/eviction/">Redis key eviction</a>).</p>
+
+<div class="callout"><strong>Consistency caveat:</strong> cache-aside assumes the instance that fills the cache can read the latest committed data. With read replicas or an eventually consistent store, a miss can be filled from a lagging replica and re-cache an old value (<a href="https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching">Azure caching guidance</a>). Facebook handles this across regions by setting a remote marker on write and sending reads for marked keys to the primary region (<a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">NSDI 2013</a>).</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Facebook memcache</div><div class="desc">Demand-filled look-aside cache handling over a billion requests per second, with leases against stale sets and herds and commit-log-driven invalidation (<a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">NSDI 2013</a>).</div></div>
+  <div class="use-case"><div class="label">Netflix EVCache</div><div class="desc">Memcached-based, zone-aware distributed cache with consistent-hash sharding and cross-zone replication for availability (<a href="https://netflix.github.io/EVCache/introduction/">EVCache docs</a>).</div></div>
+  <div class="use-case"><div class="label">Redis in front of SQL</div><div class="desc">AWS and Azure reference designs pair lazy loading with write-through on read-after-write-sensitive paths (<a href="https://docs.aws.amazon.com/pdfs/whitepapers/latest/database-caching-strategies-using-redis/database-caching-strategies-using-redis.pdf">AWS</a>, <a href="https://learn.microsoft.com/en-us/azure/architecture/databases/architecture/write-through-caching-azure-sql-managed-redis">Azure</a>).</div></div>
+  <div class="use-case"><div class="label">Data grids with write-behind</div><div class="desc">Oracle Coherence coalesces and batches cache updates to the backing store after a delay to absorb write bursts (<a href="https://docs.oracle.com/en/middleware/standalone/coherence/15.1.1/develop-applications/caching-data-sources.html">Coherence docs</a>).</div></div>
+  <div class="use-case"><div class="label">Internet Archive</div><div class="desc">Engineers benchmarked plain fetch, locked recompute, and XFetch on Redis at RedisConf 2017 to tame stampedes (<a href="https://github.com/internetarchive/xfetch/">xfetch repo</a>).</div></div>
+  <div class="use-case"><div class="label">HTTP and CDN caches</div><div class="desc"><code>stale-while-revalidate</code> and <code>stale-if-error</code> let edges keep serving during refreshes and origin outages (<a href="https://www.rfc-editor.org/rfc/rfc5861.html">RFC 5861</a>).</div></div>
+</div>
+
+<h2>Choosing a strategy</h2>
+<p>Start with cache-aside plus TTLs: it is simple, failure-tolerant, and good enough for most read-heavy data. Add write-through only on paths where users must see their own writes immediately and the data is read often after being written. Reach for write-behind when write throughput is the bottleneck and you can tolerate, or separately protect against, losing the last few seconds of writes. Whatever you pick, protect hot keys with single-flight recomputation or early refresh, invalidate by deleting rather than setting, and make sure a cache outage degrades to slower responses rather than an outage.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>R. Nishtala et al., <a href="https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170.pdf">Scaling Memcache at Facebook</a>, USENIX NSDI 2013.</li>
+  <li>A. Vattani, F. Chierichetti, K. Lowenstein, <a href="https://vldb.org/pvldb/vol8/p886-vattani.pdf">Optimal Probabilistic Cache Stampede Prevention</a>, PVLDB 8(8), 2015.</li>
+  <li>Microsoft, <a href="https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside">Cache-Aside pattern</a>, Azure Architecture Center.</li>
+  <li>Microsoft, <a href="https://learn.microsoft.com/en-us/azure/architecture/best-practices/caching">Caching guidance</a>, Azure Architecture Center.</li>
+  <li>Microsoft, <a href="https://learn.microsoft.com/en-us/azure/architecture/databases/architecture/write-through-caching-azure-sql-managed-redis">Write-through caching with Azure Managed Redis and Azure SQL Database</a>.</li>
+  <li>AWS, <a href="https://docs.aws.amazon.com/pdfs/whitepapers/latest/database-caching-strategies-using-redis/database-caching-strategies-using-redis.pdf">Database Caching Strategies Using Redis</a> (whitepaper).</li>
+  <li>Oracle, <a href="https://docs.oracle.com/en/middleware/standalone/coherence/15.1.1/develop-applications/caching-data-sources.html">Caching Data Sources (read-through, write-through, write-behind)</a>, Coherence 15.1.1 docs.</li>
+  <li>Redis, <a href="https://redis.io/docs/latest/develop/reference/eviction/">Key eviction</a>, Redis documentation.</li>
+  <li>Go Authors, <a href="https://pkg.go.dev/golang.org/x/sync/singleflight">golang.org/x/sync/singleflight</a> package documentation.</li>
+  <li>J. Nelson (Internet Archive), <a href="https://github.com/internetarchive/xfetch/">Preventing cache stampede with Redis and XFetch</a>, RedisConf 2017.</li>
+  <li>M. Nottingham, <a href="https://www.rfc-editor.org/rfc/rfc5861.html">RFC 5861: HTTP Cache-Control Extensions for Stale Content</a>, IETF, 2010.</li>
+  <li>Netflix, <a href="https://netflix.github.io/EVCache/introduction/">EVCache introduction</a>.</li>
+</ol>
+</div>
+</body>
+</html>

@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>epoll Internals: Interest Trees, Ready Lists and Wakeup Callbacks</title>
+<meta name="description" content="How Linux epoll works inside: a red-black interest tree keyed by file and fd, a ready list fed by ep_poll_callback from each file's wait queue, the rdllist and ovflist harvest, LT vs ET vs EPOLLONESHOT and EPOLLEXCLUSIVE, the dup and fork pitfall, the rwlock-to-spinlock history, and per-epoll NAPI busy polling.">
+<style> block into the document's <head> EXACTLY as written, character for character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>epoll Internals: Interest Trees, Ready Lists and Wakeup Callbacks</h1>
+<p class="subtitle">A red-black tree of interests, a list of the ready, and a callback hooked into every socket's wait queue: the machinery behind Linux's event loop.</p>
+<p class="meta">October 18, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p><code>epoll</code> is how Linux event loops watch thousands of descriptors without rescanning them on every call. The <a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7)</a> man page describes an epoll instance as two lists: an <em>interest list</em> of registered descriptors and a <em>ready list</em> of the ones with pending I/O. Inside the kernel, the interest list is a red-black tree of <code>struct epitem</code>, and the ready list is a linked list that a wakeup callback, <code>ep_poll_callback()</code>, appends to whenever a watched file signals readiness (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">fs/eventpoll.c</a>). <code>epoll_wait()</code> doesn't poll every file. It drains the ready list, so the cost tracks how many descriptors are ready, not how many are registered.</p>
+<p>That design is fast, but the details leak into userspace. Level- and edge-triggered modes differ in one line of the delivery code. <code>EPOLLONESHOT</code> and <code>EPOLLEXCLUSIVE</code> exist to tame multi-threaded wakeups. Registrations follow the open <em>file description</em>, not the descriptor number. And the lock protecting the ready list went from a spinlock to an rwlock in 5.1, then back to a spinlock in 2025.</p>
+
+<h2>The objects: eventpoll, epitem, eppoll_entry</h2>
+<p>Each <code>epoll_create1()</code> returns an anonymous <code>[eventpoll]</code> file whose <code>private_data</code> is a <code>struct eventpoll</code>. It holds a sleepable mutex <code>mtx</code>, an IRQ-safe spinlock <code>lock</code>, a wait queue <code>wq</code> for threads in <code>epoll_wait()</code>, a second queue <code>poll_wait</code> for when the epoll fd itself is polled, the ready list <code>rdllist</code>, the overflow list <code>ovflist</code>, and the tree root <code>rbr</code> (an <code>rb_root_cached</code>) (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>).</p>
+<p>Each <code>EPOLL_CTL_ADD</code> allocates a <code>struct epitem</code> from a dedicated slab cache. Its tree key is the pair (<code>struct file *</code>, fd number): <code>ep_cmp_ffd()</code> compares the file pointer first and the fd number second, so <code>ep_find()</code> is an O(log n) tree walk. epoll(7) documents the same thing from the user side: the key is "the combination of the file descriptor number and the open file description" (<a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7)</a>). That's why a <code>dup()</code>ed descriptor can be added to the same instance with a different event mask.</p>
+<p>The link to the watched file is the interesting part. <code>ep_insert()</code> calls the file's <code>f_op-&gt;poll()</code> with a custom <code>poll_table</code> whose queue function, <code>ep_ptable_queue_proc()</code>, allocates a <code>struct eppoll_entry</code>, sets its wait function to <code>ep_poll_callback</code>, and adds it to the file's wait queue head. A socket, pipe or eventfd therefore has no idea epoll exists. It runs its normal <code>wake_up()</code>, and one of the entries on its queue happens to be epoll's callback. A file can expose more than one wait queue, so an epitem keeps a <code>pwqlist</code> of these hooks (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>).</p>
+
+<div class="diagram-container">
+<h4>One epoll instance: interest tree, ready list, and hooks into watched files</h4>
+<svg width="760" height="360" viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ea1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+    <marker id="ea2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+  </defs>
+  <rect x="20" y="20" width="250" height="150" rx="10" fill="#232733" stroke="#6c8cff"/>
+  <text x="145" y="44" fill="#6c8cff" font-size="13" text-anchor="middle">struct eventpoll</text>
+  <text x="36" y="70" fill="#e1e4ed" font-size="11">mtx (mutex, sleepable)</text>
+  <text x="36" y="90" fill="#e1e4ed" font-size="11">lock (spinlock, IRQ-safe)</text>
+  <text x="36" y="110" fill="#4ecdc4" font-size="11">rbr: red-black interest tree</text>
+  <text x="36" y="130" fill="#ffd93d" font-size="11">rdllist / ovflist: ready lists</text>
+  <text x="36" y="150" fill="#e1e4ed" font-size="11">wq: threads in epoll_wait()</text>
+  <circle cx="420" cy="50" r="20" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="420" y="54" fill="#4ecdc4" font-size="10" text-anchor="middle">epi</text>
+  <circle cx="360" cy="120" r="20" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="360" y="124" fill="#4ecdc4" font-size="10" text-anchor="middle">epi</text>
+  <circle cx="480" cy="120" r="20" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="480" y="124" fill="#ff6b9d" font-size="10" text-anchor="middle">epi</text>
+  <line x1="406" y1="64" x2="374" y2="104" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="434" y1="64" x2="466" y2="104" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="270" y1="110" x2="398" y2="54" stroke="#8b90a0" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ea1)"/>
+  <text x="560" y="44" fill="#8b90a0" font-size="11">key = (struct file *, fd)</text>
+  <text x="560" y="62" fill="#8b90a0" font-size="11">ep_find(): O(log n)</text>
+  <rect x="20" y="210" width="250" height="44" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="145" y="237" fill="#ffd93d" font-size="12" text-anchor="middle">rdllist: [ epi ] &#8594; [ epi ] &#8594; ...</text>
+  <line x1="145" y1="170" x2="145" y2="206" stroke="#8b90a0" stroke-width="1.2" marker-end="url(#ea1)"/>
+  <rect x="520" y="200" width="220" height="130" rx="10" fill="#232733" stroke="#8b90a0"/>
+  <text x="630" y="224" fill="#e1e4ed" font-size="12" text-anchor="middle">watched socket</text>
+  <text x="630" y="244" fill="#8b90a0" font-size="11" text-anchor="middle">wait_queue_head</text>
+  <rect x="540" y="256" width="180" height="28" rx="6" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="630" y="275" fill="#ff6b9d" font-size="11" text-anchor="middle">eppoll_entry &#8594; ep_poll_callback</text>
+  <rect x="540" y="292" width="180" height="26" rx="6" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="630" y="309" fill="#8b90a0" font-size="11" text-anchor="middle">other waiters</text>
+  <line x1="486" y1="139" x2="548" y2="256" stroke="#ff6b9d" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <text x="526" y="170" fill="#ff6b9d" font-size="10">pwqlist (added at EPOLL_CTL_ADD)</text>
+  <path d="M540,270 C420,270 360,240 274,236" fill="none" stroke="#ff6b9d" stroke-width="2" marker-end="url(#ea2)"/>
+  <text x="400" y="290" fill="#ff6b9d" font-size="11" text-anchor="middle">wake_up() &#8594; callback appends epi</text>
+  <text x="380" y="345" fill="#8b90a0" font-size="11" text-anchor="middle">epoll_wait() only walks rdllist; the tree is touched by epoll_ctl() and teardown</text>
+</svg>
+</div>
+
+<h2>The wakeup path: ep_poll_callback()</h2>
+<p>When data arrives on a socket, the network stack wakes the socket's wait queue, which may happen in softirq or even hard-IRQ context. That's why <code>ep-&gt;lock</code> is a spinlock taken with <code>spin_lock_irqsave()</code> and why the sleepable <code>ep-&gt;mtx</code> is never taken here (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c locking notes</a>). Under the lock, <code>ep_poll_callback()</code>:</p>
+<ol style="margin:0 0 16px 22px">
+  <li>Returns early if the item's mask has no poll events left. That's how a fired <code>EPOLLONESHOT</code> item stays disabled.</li>
+  <li>Returns early if the wakeup key carries event bits that the item doesn't want.</li>
+  <li>If a harvest is in progress, pushes the item onto <code>ovflist</code>. Otherwise, if the item isn't already linked, appends it to the tail of <code>rdllist</code>. An item is never queued twice: a burst of packets is one entry, and epoll(7) confirms that events between calls "will be combined".</li>
+  <li>Wakes <code>ep-&gt;wq</code> if threads are sleeping in <code>epoll_wait()</code>, and schedules a nested wakeup if someone is polling the epoll fd itself.</li>
+</ol>
+<p>The callback does no I/O and computes no final event mask. It only records that an item is worth checking.</p>
+
+<h2>Harvesting: rdllist, ovflist and the re-poll</h2>
+<p><code>epoll_wait()</code> lands in <code>ep_poll()</code>. If nothing is ready, the thread adds itself to <code>ep-&gt;wq</code> with <code>__add_wait_queue_exclusive()</code> and sleeps until the timeout (milliseconds for <code>epoll_wait</code>, a <code>timespec</code> with nanosecond resolution for <a href="https://man7.org/linux/man-pages/man2/epoll_pwait2.2.html">epoll_pwait2(2)</a>, added in Linux 5.11). When events are available, <code>ep_send_events()</code> takes <code>ep-&gt;mtx</code> and runs the scan.</p>
+<p>Copying events to userspace can fault and sleep, so it can't happen under a spinlock. <code>ep_start_scan()</code> solves this by briefly taking <code>ep-&gt;lock</code>, splicing the whole <code>rdllist</code> into a private <code>scan_batch</code>, and setting <code>ovflist</code> from the sentinel <code>EP_UNACTIVE_PTR</code> to <code>NULL</code>, which means a scan is active. While the scan runs without the spinlock, callbacks that fire are diverted onto <code>ovflist</code>, a singly linked LIFO. For each batched item, <code>ep_deliver_event()</code> calls the file's <code>poll()</code> again to get the <em>current</em> mask. Items that are no longer ready are dropped silently. The rest are copied out with <code>epoll_put_uevent()</code>. Afterwards, <code>ep_done_scan()</code> moves the <code>ovflist</code> items back onto <code>rdllist</code> (head insertion turns LIFO back into FIFO), resets the sentinel, splices back anything the caller left in the batch, and wakes another waiter if <code>rdllist</code> isn't empty (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>).</p>
+
+<div class="diagram-container">
+<h4>Ready-list state machine during an epoll_wait() harvest</h4>
+<svg width="760" height="300" viewBox="0 0 760 300" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="eb1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="20" y="30" width="200" height="70" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="120" y="54" fill="#4ecdc4" font-size="12" text-anchor="middle">1. ep_start_scan()</text>
+  <text x="120" y="74" fill="#e1e4ed" font-size="11" text-anchor="middle">splice rdllist &#8594; scan_batch</text>
+  <text x="120" y="90" fill="#8b90a0" font-size="11" text-anchor="middle">ovflist = NULL (scanning)</text>
+  <rect x="280" y="30" width="200" height="70" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="380" y="54" fill="#6c8cff" font-size="12" text-anchor="middle">2. ep_deliver_event()</text>
+  <text x="380" y="74" fill="#e1e4ed" font-size="11" text-anchor="middle">re-poll file, copy_to_user</text>
+  <text x="380" y="90" fill="#8b90a0" font-size="11" text-anchor="middle">ep-&gt;mtx held, ep-&gt;lock not held</text>
+  <rect x="540" y="30" width="200" height="70" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="640" y="54" fill="#4ecdc4" font-size="12" text-anchor="middle">3. ep_done_scan()</text>
+  <text x="640" y="74" fill="#e1e4ed" font-size="11" text-anchor="middle">ovflist &#8594; rdllist, splice batch</text>
+  <text x="640" y="90" fill="#8b90a0" font-size="11" text-anchor="middle">ovflist = EP_UNACTIVE_PTR</text>
+  <line x1="220" y1="65" x2="276" y2="65" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#eb1)"/>
+  <line x1="480" y1="65" x2="536" y2="65" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#eb1)"/>
+  <rect x="280" y="150" width="200" height="50" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="380" y="172" fill="#ff6b9d" font-size="12" text-anchor="middle">ep_poll_callback() mid-scan</text>
+  <text x="380" y="190" fill="#8b90a0" font-size="11" text-anchor="middle">push epi on ovflist (LIFO)</text>
+  <line x1="380" y1="150" x2="380" y2="104" stroke="#ff6b9d" stroke-width="1.2" stroke-dasharray="4,3"/>
+  <path d="M480,175 C560,175 620,150 630,104" fill="none" stroke="#ff6b9d" stroke-width="1.5" marker-end="url(#eb1)"/>
+  <rect x="20" y="230" width="230" height="50" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="135" y="252" fill="#ffd93d" font-size="12" text-anchor="middle">Level-triggered</text>
+  <text x="135" y="270" fill="#8b90a0" font-size="11" text-anchor="middle">re-added to rdllist tail after copy</text>
+  <rect x="265" y="230" width="230" height="50" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="380" y="252" fill="#6c8cff" font-size="12" text-anchor="middle">EPOLLET</text>
+  <text x="380" y="270" fill="#8b90a0" font-size="11" text-anchor="middle">dropped until the next callback</text>
+  <rect x="510" y="230" width="230" height="50" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="625" y="252" fill="#ff6b9d" font-size="12" text-anchor="middle">EPOLLONESHOT</text>
+  <text x="625" y="270" fill="#8b90a0" font-size="11" text-anchor="middle">events &amp;= EP_PRIVATE_BITS (disarmed)</text>
+  <line x1="380" y1="100" x2="135" y2="226" stroke="#8b90a0" stroke-width="1" marker-end="url(#eb1)"/>
+  <line x1="380" y1="100" x2="625" y2="226" stroke="#8b90a0" stroke-width="1" marker-end="url(#eb1)"/>
+</svg>
+</div>
+
+<h2>LT, ET and EPOLLONESHOT are one branch apart</h2>
+<p>The three modes come down to a few lines at the end of <code>ep_deliver_event()</code>. With <code>EPOLLONESHOT</code>, the item's mask is cut down to its private bits, so later callbacks see "no poll events" and ignore it until <code>EPOLL_CTL_MOD</code> rearms it. Without <code>EPOLLET</code> (level-triggered, the default), the item goes back on the tail of <code>rdllist</code>, so the next <code>epoll_wait()</code> polls it again and reports it again while data remains. With <code>EPOLLET</code>, the item is just dropped and comes back only when the file's next <code>wake_up()</code> runs the callback again (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>).</p>
+<p>The rules in <a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7)</a> follow from this. Its pipe example shows ET <code>epoll_wait()</code> hanging after a reader consumed only 1 kB of a 2 kB write. The fix is nonblocking descriptors and waiting only after <code>read</code>/<code>write</code> returns <code>EAGAIN</code>. LT, by contrast, is "simply a faster poll(2)." <a href="https://man7.org/linux/man-pages/man2/epoll_ctl.2.html">epoll_ctl(2)</a> lists <code>EPOLLONESHOT</code> since 2.6.2 and <code>EPOLLWAKEUP</code> since 3.5.</p>
+
+<div class="callout"><strong>Why the re-poll matters:</strong> because harvest calls <code>poll()</code> again instead of trusting the callback's key, a stale wakeup costs one wasted poll and never produces a false event. It also explains the epoll(7) note that <code>EPOLL_CTL_MOD</code> on an item with collected but unreported events "will reread available I/O."</div>
+
+<h2>Thundering herds and EPOLLEXCLUSIVE</h2>
+<p>There are two kinds of sharing. First, <strong>many threads block on one epoll fd</strong>. Waiters join <code>ep-&gt;wq</code> exclusively, so a single <code>wake_up()</code> releases one thread, and epoll(7) promises that for an ET descriptor "just one of the threads" wakes. A level-triggered item, however, goes back onto <code>rdllist</code>, and <code>ep_done_scan()</code> wakes another waiter if the list is non-empty. That re-queue is one way the LT herd Marek Majkowski describes shows up, where two threads wake for one new connection and the loser's <code>accept()</code> returns <code>EAGAIN</code> (<a href="https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12/">Majkowski, part 1</a>).</p>
+<p>Second, <strong>many epoll fds watch one file</strong>, such as one per worker on a shared listening socket. Each registration hangs its own <code>eppoll_entry</code> on the socket's wait queue, so every instance gets woken. Jason Baron's <a href="https://lwn.net/Articles/667087/">EPOLLEXCLUSIVE patch</a> (merged for Linux 4.5 as <a href="https://github.com/torvalds/linux/commit/df0108c5da561c66c333bb46bfe3c1fc65905898">df0108c</a>) adds the entry with <code>add_wait_queue_exclusive()</code> instead. <code>ep_poll_callback()</code> then returns nonzero only if that instance has a thread blocked in <code>epoll_wait()</code> and the event matches its mask. The wakeup walk queues the event to each exclusive instance until one of them has an idle thread, so "one or more" instances receive it (<a href="https://man7.org/linux/man-pages/man2/epoll_ctl.2.html">epoll_ctl(2)</a>). The flag is allowed only on <code>EPOLL_CTL_ADD</code>, only with <code>EPOLLIN</code>, <code>EPOLLOUT</code>, <code>EPOLLWAKEUP</code>, <code>EPOLLET</code> (plus <code>EPOLLERR</code>/<code>EPOLLHUP</code>), and never on a nested epoll target. Baron's test workload dropped from 860 s to 24 s.</p>
+<p>Majkowski's conclusion: use LT plus <code>EPOLLEXCLUSIVE</code> to spread <code>accept()</code> across workers, and use <code>EPOLLONESHOT</code> with a manual rearm when many threads <code>read()</code> from a shared set, because otherwise two threads can each read part of one socket's byte stream and reorder it.</p>
+
+<h2>The fork and dup pitfall: descriptions, not descriptors</h2>
+<p>Since the tree key holds a <code>struct file *</code>, a registration lives as long as the <em>open file description</em> does. Removal on close happens in <code>eventpoll_release_file()</code>, which <code>__fput()</code> calls only when the last reference goes away (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c removal paths</a>). epoll(7) spells out the result: if <code>dup()</code>, <code>dup2()</code>, <code>fcntl(F_DUPFD)</code> or <code>fork()</code> created another descriptor for the same description, closing the registered fd doesn't remove it, and "events may be reported for that file descriptor" afterwards. Majkowski's <a href="https://idea.popcount.org/2017-03-20-epoll-is-fundamentally-broken-22/">part 2</a> walks through the worst case: after <code>rfd2 = dup(rfd); close(rfd)</code>, <code>epoll_wait()</code> still reports <code>rfd</code>, and neither <code>EPOLL_CTL_DEL</code> on <code>rfd</code> (now closed) nor on <code>rfd2</code> (a different key) can remove it. His rule is to always call <code>EPOLL_CTL_DEL</code> before <code>close()</code>.</p>
+
+<div class="diagram-container">
+<h4>Why close(fd) can leave a live registration</h4>
+<svg width="760" height="230" viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ec1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="20" y="30" width="170" height="40" rx="8" fill="#1a1d27" stroke="#2e3345" stroke-dasharray="5,4"/>
+  <text x="105" y="55" fill="#8b90a0" font-size="12" text-anchor="middle">fd 5 (closed)</text>
+  <rect x="20" y="90" width="170" height="40" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="105" y="115" fill="#4ecdc4" font-size="12" text-anchor="middle">fd 7 = dup(5)</text>
+  <rect x="20" y="150" width="170" height="40" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="105" y="175" fill="#4ecdc4" font-size="12" text-anchor="middle">child fd 5 (after fork)</text>
+  <rect x="300" y="85" width="180" height="60" rx="10" fill="#232733" stroke="#ffd93d"/>
+  <text x="390" y="110" fill="#ffd93d" font-size="12" text-anchor="middle">struct file</text>
+  <text x="390" y="130" fill="#8b90a0" font-size="11" text-anchor="middle">open file description</text>
+  <line x1="190" y1="110" x2="296" y2="112" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#ec1)"/>
+  <line x1="190" y1="170" x2="296" y2="128" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#ec1)"/>
+  <line x1="190" y1="50" x2="296" y2="98" stroke="#2e3345" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <rect x="560" y="85" width="180" height="60" rx="10" fill="#232733" stroke="#ff6b9d"/>
+  <text x="650" y="110" fill="#ff6b9d" font-size="12" text-anchor="middle">epitem</text>
+  <text x="650" y="130" fill="#8b90a0" font-size="11" text-anchor="middle">key (file*, 5): still live</text>
+  <line x1="556" y1="115" x2="484" y2="115" stroke="#ff6b9d" stroke-width="1.5" marker-end="url(#ec1)"/>
+  <text x="390" y="212" fill="#8b90a0" font-size="11" text-anchor="middle">Removal runs only at the final fput(); EPOLL_CTL_DEL needs a valid fd 5 to rebuild the key</text>
+</svg>
+</div>
+
+<h2>Locking history: spinlock, rwlock, spinlock</h2>
+<p>The current lock order is <code>epnested_mutex</code> (global, only for nested-epoll loop checks), then <code>ep-&gt;mtx</code>, then <code>ep-&gt;lock</code>. Nesting is capped at <code>EP_MAX_NESTS</code> = 4, and <code>reverse_path_check()</code> limits how many wakeup paths of each length can lead to a single file (1000, 500, 100, 50, 10) (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>). The ready-list lock in the middle has changed twice.</p>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">Linux 5.1: rwlock + xchg</h4>
+    <ul>
+      <li>Roman Penyaev's <a href="https://github.com/torvalds/linux/commit/a218cc4914209ac14476cb32769b31a556355b22">a218cc4</a> replaced the spinlock with an rwlock</li>
+      <li>Callbacks took it for read and appended with an atomic <code>xchg</code></li>
+      <li>The consumer took it for write to freeze the lists</li>
+      <li>stress-epoll, 8 producer threads: 6402 &#8594; 10038 events/ms (<a href="https://lkml.iu.edu/1901.0/01042.html">LKML v2</a>)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">2025: back to a spinlock</h4>
+    <ul>
+      <li>Nam Cao's <a href="https://github.com/linux-mm/linux-mm/commit/0c43094f8cc9d3d99d835c0ac9c4fe1ccc62babd">0c43094</a>: "Replace rwlock with spinlock"</li>
+      <li>Readers can't be priority-boosted, even on PREEMPT_RT, so a low-priority producer could block a high-priority consumer</li>
+      <li>stress-epoll on 12 x86 CPUs drops 31 to 47%; <code>perf bench epoll wait</code> improves slightly</li>
+      <li>In v6.18, with stable backports to 6.17 and 6.6 (<a href="https://www.spinics.net/lists/stable/msg883512.html">stable review</a>)</li>
+    </ul>
+  </div>
+</div>
+<p>Cao's commit message is blunt: "spinlock was used originally for years, and the commit which converted to rwlock didn't mention a real workload, just that the benchmark numbers are nice" (<a href="https://lore-kernel.gnuweeb.org/linux-fsdevel/ec92458ea357ec503c737ead0f10b2c6e4c37d47.1752581388.git.namcao@linutronix.de/">v4 patch</a>). Current mainline also wraps the rdllist/ovflist switch in a <code>seqcount_spinlock_t</code>, so the lockless <code>ep_events_available()</code> check can't miss a scan in progress.</p>
+
+<h2>Busy polling from epoll_wait()</h2>
+<p>With <code>CONFIG_NET_RX_BUSY_POLL</code>, each callback on a socket records the socket's <code>sk_napi_id</code> in <code>ep-&gt;napi_id</code>. Before sleeping, <code>ep_poll()</code> calls <code>ep_busy_loop()</code>, which runs <code>napi_busy_loop()</code> on that NIC queue and pulls packets in the waiting thread's context instead of waiting for an interrupt (<a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">eventpoll.c</a>). The <a href="https://docs.kernel.org/networking/napi.html">NAPI docs</a> say this works only if every fd in the epoll context has the same NAPI ID. Applications arrange that with <code>SO_INCOMING_NAPI_ID</code> plus an acceptor thread, or with a <code>SO_REUSEPORT</code> BPF program. It can be turned on system-wide with <code>net.core.busy_poll</code>. Since Linux 6.9 and glibc 2.40, it can also be set per instance: <code>ioctl(epfd, EPIOCSPARAMS, &amp;params)</code> sets <code>busy_poll_usecs</code>, <code>busy_poll_budget</code> (capped at <code>NAPI_POLL_WEIGHT</code> without <code>CAP_NET_ADMIN</code>) and <code>prefer_busy_poll</code> (<a href="https://man7.org/linux/man-pages/man2/ioctl_eventpoll.2.html">ioctl_eventpoll(2)</a>, <a href="https://patchew.org/linux/20240213061652.6342-1-jdamato@fastly.com/">Joe Damato's series</a>). <code>prefer_busy_poll</code> keeps device IRQs masked while the app keeps polling, and the newer per-NAPI <code>irq-suspend-timeout</code> extends that into IRQ suspension, where interrupts stay off as long as <code>epoll_wait()</code> keeps finding events.</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Event-loop servers</div><div class="desc">The epoll(7) example pattern: a level-triggered listener, accepted sockets added with <code>EPOLLIN | EPOLLET</code>, and each one drained until <code>EAGAIN</code>.</div></div>
+  <div class="use-case"><div class="label">Scaling accept()</div><div class="desc">One epoll per worker on a shared listening socket with <code>EPOLLEXCLUSIVE</code>, so only a worker with an idle thread is woken.</div></div>
+  <div class="use-case"><div class="label">Thread-pool readers</div><div class="desc">A shared epoll set with <code>EPOLLONESHOT</code>, rearmed with <code>EPOLL_CTL_MOD</code> after each request, so only one thread owns a socket at a time.</div></div>
+  <div class="use-case"><div class="label">Low-latency networking</div><div class="desc">Per-epoll busy poll with <code>EPIOCSPARAMS</code> and NAPI-ID-aligned workers trades CPU for lower receive latency without a global sysctl.</div></div>
+  <div class="use-case"><div class="label">Mobile wakeups</div><div class="desc"><code>EPOLLWAKEUP</code> holds a wakeup source from the moment an event is queued until the next <code>epoll_wait()</code>, so autosleep can't suspend before it's handled.</div></div>
+  <div class="use-case"><div class="label">Nested loops</div><div class="desc">An epoll fd is itself pollable, so a library can expose one fd that an outer loop watches, up to the nesting and path limits.</div></div>
+</div>
+
+<div class="callout"><strong>Design lesson:</strong> epoll's speed comes from separating <em>registration</em> (an O(log n) tree touched only by <code>epoll_ctl</code>) from <em>notification</em> (an O(1) list append in the wakeup path). Its sharp edges come from the same place: the callback lives on the open file description, waits are shared, and the ready list behaves differently per mode. That's why you have to deregister before <code>close()</code>, pick LT, ET or ONESHOT on purpose, and know which lock your wakeups contend on.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://github.com/torvalds/linux/blob/master/fs/eventpoll.c">fs/eventpoll.c, Linux kernel source (mainline)</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man7/epoll.7.html">epoll(7), Linux manual page</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man2/epoll_ctl.2.html">epoll_ctl(2), Linux manual page</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man2/epoll_pwait2.2.html">epoll_pwait2(2) / epoll_wait(2), Linux manual page</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man2/ioctl_eventpoll.2.html">ioctl_eventpoll(2), Linux manual page</a></li>
+  <li><a href="https://lwn.net/Articles/667087/">[PATCH] epoll: add EPOLLEXCLUSIVE flag, Jason Baron, LWN.net (Dec 2015)</a></li>
+  <li><a href="https://lwn.net/Articles/632590/">[PATCH 0/2] Add epoll round robin wakeup mode, Jason Baron, LWN.net (Feb 2015)</a></li>
+  <li><a href="https://github.com/torvalds/linux/commit/df0108c5da561c66c333bb46bfe3c1fc65905898">df0108c epoll: add EPOLLEXCLUSIVE flag, torvalds/linux</a></li>
+  <li><a href="https://github.com/torvalds/linux/commit/a218cc4914209ac14476cb32769b31a556355b22">a218cc4 epoll: use rwlock in order to reduce ep_poll_callback() contention, Roman Penyaev, torvalds/linux</a></li>
+  <li><a href="https://lkml.iu.edu/1901.0/01042.html">[PATCH v2 4/4] epoll: use rwlock in order to reduce ep_poll_callback() contention, LKML (Jan 2019)</a></li>
+  <li><a href="https://lore-kernel.gnuweeb.org/linux-fsdevel/ec92458ea357ec503c737ead0f10b2c6e4c37d47.1752581388.git.namcao@linutronix.de/">[PATCH v4 1/1] eventpoll: Replace rwlock with spinlock, Nam Cao, linux-fsdevel (Jul 2025)</a></li>
+  <li><a href="https://github.com/linux-mm/linux-mm/commit/0c43094f8cc9d3d99d835c0ac9c4fe1ccc62babd">0c43094 eventpoll: Replace rwlock with spinlock (commit mirror)</a></li>
+  <li><a href="https://www.spinics.net/lists/stable/msg883512.html">[PATCH 6.17 210/371] eventpoll: Replace rwlock with spinlock, stable review (Oct 2025)</a></li>
+  <li><a href="https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12/">Epoll is fundamentally broken 1/2, Marek Majkowski (Feb 2017)</a></li>
+  <li><a href="https://idea.popcount.org/2017-03-20-epoll-is-fundamentally-broken-22/">Epoll is fundamentally broken 2/2, Marek Majkowski (Mar 2017)</a></li>
+  <li><a href="https://docs.kernel.org/networking/napi.html">NAPI (busy polling, epoll-based busy polling, IRQ suspension), The Linux Kernel documentation</a></li>
+  <li><a href="https://patchew.org/linux/20240213061652.6342-1-jdamato@fastly.com/">[PATCH net-next v8 0/4] Per epoll context busy poll support, Joe Damato (Feb 2024)</a></li>
+</ol>
+</div>
+</body>
+</html>

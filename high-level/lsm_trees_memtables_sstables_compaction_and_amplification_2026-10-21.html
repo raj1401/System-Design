@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LSM Trees: Memtables, SSTables, Compaction, and the Read/Write/Space Tradeoff</title>
+<meta name="description" content="How log-structured merge trees turn random writes into sequential ones with memtables, immutable SSTables, Bloom filters, and background compaction, and why leveled vs tiered compaction trades write, read, and space amplification.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>LSM Trees: Memtables, SSTables, Compaction, and the Read/Write/Space Tradeoff</h1>
+<p class="subtitle">The write-optimized storage engine underneath Bigtable, Cassandra, HBase, RocksDB, and much of modern data infrastructure.</p>
+<p class="meta">October 21, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>A <strong>log-structured merge tree (LSM tree)</strong> is a storage engine design that never updates data in place. Writes land in a sorted in-memory buffer (the <em>memtable</em>) after being appended to a write-ahead log. When the memtable fills, it is frozen and flushed to disk as an immutable, sorted file (an <em>SSTable</em>). Background <em>compaction</em> continuously merges those files, discarding overwritten values and deletion markers. The idea dates to O'Neil et al.'s 1996 paper, which aimed to index fast-growing history tables without the random disk I/O a B-tree insert costs <a href="https://cs.umb.edu/~poneil/lsmtree.pdf">[1]</a>.</p>
+<p>The payoff is cheap, sequential writes. The price is that a read may need to consult several files, and every byte gets rewritten several times during its life. Almost every design decision in an LSM engine is about where you pay that price.</p>
+
+<div class="callout"><strong>The one-line intuition:</strong> a B-tree pays at write time to keep data in its final place; an LSM tree defers that work, batches it, and pays it later in large sequential merges, reminiscent of merge sort <a href="https://cs.umb.edu/~poneil/lsmtree.pdf">[1]</a>.</div>
+
+<h2>How It Works</h2>
+
+<h3>The write path</h3>
+<p>Cassandra's documentation lists the sequence plainly: log the write to the commit log, write it to the memtable, flush the memtable, and store the result on disk as SSTables <a href="https://cassandra.apache.org/doc/stable/cassandra/architecture/storage-engine.html">[2]</a>. Because nothing on disk is read or modified during a write, the write path is free of read lookups. Bigtable describes the flush as a <em>minor compaction</em>: when the memtable hits a size threshold it is frozen, a new one takes its place, and the frozen one becomes an SSTable, which also shrinks how much commit log must be replayed after a crash <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>.</p>
+
+<div class="diagram-container">
+<h4>Write path and level structure</h4>
+<svg width="760" height="360" viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="20" y="30" width="110" height="44" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="75" y="57" fill="#e1e4ed" font-size="13" text-anchor="middle">put(k, v)</text>
+  <line x1="130" y1="52" x2="200" y2="52" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="205" y="20" width="160" height="64" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="285" y="47" fill="#e1e4ed" font-size="13" text-anchor="middle">Write-ahead log</text>
+  <text x="285" y="66" fill="#8b90a0" font-size="11" text-anchor="middle">append-only, for recovery</text>
+  <line x1="365" y1="52" x2="430" y2="52" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar)"/>
+  <rect x="435" y="20" width="160" height="64" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="515" y="47" fill="#e1e4ed" font-size="13" text-anchor="middle">Memtable</text>
+  <text x="515" y="66" fill="#8b90a0" font-size="11" text-anchor="middle">sorted, in memory</text>
+  <line x1="40" y1="110" x2="720" y2="110" stroke="#2e3345" stroke-dasharray="5,4"/>
+  <text x="725" y="98" fill="#8b90a0" font-size="11" text-anchor="end">memory</text>
+  <text x="725" y="126" fill="#8b90a0" font-size="11" text-anchor="end">disk</text>
+  <line x1="515" y1="84" x2="515" y2="140" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="525" y="125" fill="#ffd93d" font-size="11">flush when full</text>
+  <text x="30" y="167" fill="#4ecdc4" font-size="12">L0</text>
+  <rect x="430" y="148" width="60" height="30" rx="5" fill="#1a1d27" stroke="#4ecdc4"/>
+  <rect x="500" y="148" width="60" height="30" rx="5" fill="#1a1d27" stroke="#4ecdc4"/>
+  <rect x="570" y="148" width="60" height="30" rx="5" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="200" y="168" fill="#8b90a0" font-size="11">SSTables may overlap in key range</text>
+  <text x="30" y="227" fill="#4ecdc4" font-size="12">L1</text>
+  <g fill="#1a1d27" stroke="#6c8cff">
+    <rect x="70" y="208" width="120" height="30" rx="5"/><rect x="200" y="208" width="120" height="30" rx="5"/><rect x="330" y="208" width="120" height="30" rx="5"/>
+  </g>
+  <text x="130" y="228" fill="#8b90a0" font-size="11" text-anchor="middle">a–f</text>
+  <text x="260" y="228" fill="#8b90a0" font-size="11" text-anchor="middle">g–p</text>
+  <text x="390" y="228" fill="#8b90a0" font-size="11" text-anchor="middle">q–z</text>
+  <text x="470" y="228" fill="#8b90a0" font-size="11">one sorted run, non-overlapping files</text>
+  <text x="30" y="292" fill="#4ecdc4" font-size="12">L2</text>
+  <g fill="#1a1d27" stroke="#6c8cff">
+    <rect x="70" y="273" width="62" height="30" rx="5"/><rect x="138" y="273" width="62" height="30" rx="5"/><rect x="206" y="273" width="62" height="30" rx="5"/><rect x="274" y="273" width="62" height="30" rx="5"/><rect x="342" y="273" width="62" height="30" rx="5"/><rect x="410" y="273" width="62" height="30" rx="5"/><rect x="478" y="273" width="62" height="30" rx="5"/><rect x="546" y="273" width="62" height="30" rx="5"/><rect x="614" y="273" width="62" height="30" rx="5"/>
+  </g>
+  <text x="380" y="335" fill="#8b90a0" font-size="11" text-anchor="middle">each level is roughly fanout times larger than the one above; compaction merges Ln-1 into Ln</text>
+  <path d="M600 178 C 640 195, 470 195, 450 205" fill="none" stroke="#ffd93d" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar)"/>
+  <path d="M420 238 C 450 255, 420 260, 400 270" fill="none" stroke="#ffd93d" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#ar)"/>
+</svg>
+</div>
+
+<h3>The read path</h3>
+<p>Because the newest version of a key could be in the memtable or any SSTable, a point read checks the memtable, then L0 files newest-first, then at most one file per deeper level, stopping at the first hit. Deletes are written as <em>tombstones</em>, special entries that suppress older values until compaction can drop both <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>.</p>
+<p>Two tricks keep this affordable. A per-SSTable <strong>Bloom filter</strong> answers "might this file contain key k?" with no false negatives, so most files are skipped without touching disk; Bigtable notes that a small amount of memory spent on Bloom filters drastically reduces disk seeks <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>, and Cassandra relies on them for the same reason <a href="https://cassandra.apache.org/doc/stable/cassandra/architecture/storage-engine.html">[2]</a>. Second, a <strong>block cache</strong> keeps hot SSTable blocks in memory <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>. Range scans cannot use Bloom filters, so they merge iterators across every overlapping run, which is where an LSM tree's shape matters most.</p>
+
+<div class="diagram-container">
+<h4>Point lookup: newest to oldest, Bloom filters first</h4>
+<svg width="740" height="190" viewBox="0 0 740 190" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="ar2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#8b90a0"/></marker></defs>
+  <rect x="10" y="70" width="90" height="44" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="55" y="97" fill="#e1e4ed" font-size="13" text-anchor="middle">get(k)</text>
+  <line x1="100" y1="92" x2="135" y2="92" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="140" y="70" width="110" height="44" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="195" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">Memtable: miss</text>
+  <line x1="250" y1="92" x2="285" y2="92" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="290" y="70" width="120" height="44" rx="8" fill="#232733" stroke="#8b90a0"/>
+  <text x="350" y="90" fill="#e1e4ed" font-size="12" text-anchor="middle">L0 file: Bloom</text>
+  <text x="350" y="106" fill="#8b90a0" font-size="11" text-anchor="middle">"definitely not"</text>
+  <line x1="410" y1="92" x2="445" y2="92" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="450" y="70" width="120" height="44" rx="8" fill="#232733" stroke="#8b90a0"/>
+  <text x="510" y="90" fill="#e1e4ed" font-size="12" text-anchor="middle">L1 file: Bloom</text>
+  <text x="510" y="106" fill="#8b90a0" font-size="11" text-anchor="middle">"definitely not"</text>
+  <line x1="570" y1="92" x2="605" y2="92" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <rect x="610" y="70" width="120" height="44" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="670" y="90" fill="#e1e4ed" font-size="12" text-anchor="middle">L2 file: "maybe"</text>
+  <text x="670" y="106" fill="#4ecdc4" font-size="11" text-anchor="middle">read 1 block: hit</text>
+  <text x="370" y="160" fill="#8b90a0" font-size="11" text-anchor="middle">Skipped files cost a memory probe, not a disk read. A false positive costs one wasted block read.</text>
+</svg>
+</div>
+
+<h3>Compaction and the three amplifications</h3>
+<p>Without compaction, reads would have to merge an unbounded number of files. Bigtable bounds this with <em>merging compactions</em> and periodic <em>major compactions</em> that rewrite everything into one SSTable with no deleted data left behind <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>. Every compaction policy is a bet across three costs, which the RUM conjecture formalizes: an access method that bounds two of read, update, and memory (space) overhead must accept a lower bound on the third <a href="https://openproceedings.org/2016/conf/edbt/paper-12.pdf">[4]</a>.</p>
+<ul style="margin: 0 0 16px 22px;">
+<li><strong>Write amplification</strong>: bytes physically written per byte logically written. Cassandra notes every write is rewritten multiple times by compaction <a href="https://cassandra.apache.org/doc/stable/cassandra/architecture/storage-engine.html">[2]</a>; WiscKey measured LSM I/O amplification reaching 50x or more <a href="https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf">[7]</a>.</li>
+<li><strong>Read amplification</strong>: how many files or blocks a lookup touches.</li>
+<li><strong>Space amplification</strong>: disk used divided by live data, inflated by stale versions and tombstones.</li>
+</ul>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff;">Leveled compaction (LevelDB, RocksDB default, Cassandra LCS)</h4>
+    <ul>
+      <li>Each level is one sorted run split into non-overlapping files</li>
+      <li>Merges only the overlapping slice of Ln-1 into Ln (some-to-some)</li>
+      <li>Low read and space amplification</li>
+      <li>Per-level write amp up to the fanout, so higher total write amp</li>
+      <li>Good for read-heavy or update/delete-heavy data</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4;">Tiered / size-tiered (Cassandra STCS, RocksDB Universal)</h4>
+    <ul>
+      <li>Several similar-sized runs accumulate per tier, then merge together</li>
+      <li>Per-level write amp is about 1, much cheaper writes</li>
+      <li>More runs to check per read</li>
+      <li>Large transient space amp during big merges</li>
+      <li>Good for write-heavy ingest</li>
+    </ul>
+  </div>
+</div>
+<p>These characterizations come from RocksDB's compaction taxonomy <a href="https://github.com/facebook/rocksdb/wiki/Compaction">[5]</a> and a VLDB Journal evaluation of merge policies <a href="https://link.springer.com/article/10.1007/s00778-020-00638-1">[6]</a>. Real engines blend them: RocksDB's level compaction is actually tiered at L0 and leveled below, and Cassandra offers Time Window Compaction for TTL'd time series plus a newer Unified Compaction Strategy whose single scaling parameter slides between read-favoring and write-favoring behavior <a href="https://cassandra.apache.org/doc/latest/cassandra/managing/operating/compaction/overview.html">[8]</a> <a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/compaction/ucs.html">[9]</a>.</p>
+
+<div class="callout"><strong>Design lever worth knowing:</strong> WiscKey keeps only keys (plus pointers) in the LSM tree and appends values to a separate log, so compaction stops dragging large values around. That cuts write amplification and shrinks the tree enough to cache better <a href="https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf">[7]</a>.</div>
+
+<h3>LSM tree vs B-tree, at a glance</h3>
+<p>B-trees update pages in place, giving predictable reads and cheap range scans, but small random updates turn into random writes and partially filled pages <a href="https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf">[7]</a>. LSM trees convert those into sequential writes and pack data densely, which also compresses well, at the cost of background compaction I/O and occasional latency spikes when compaction falls behind. Picking between them is a workload question: write rate, read/scan mix, update and delete churn, and how much disk and SSD endurance you can spend.</p>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Google Bigtable</div><div class="desc">Tablet servers buffer writes in memtables, persist SSTables on GFS, and use minor, merging, and major compactions plus Bloom filters <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">[3]</a>.</div></div>
+  <div class="use-case"><div class="label">Apache Cassandra</div><div class="desc">Commit log, memtables, and immutable SSTables, with pluggable STCS, LCS, TWCS, and UCS compaction <a href="https://cassandra.apache.org/doc/stable/cassandra/architecture/storage-engine.html">[2]</a> <a href="https://cassandra.apache.org/doc/latest/cassandra/managing/operating/compaction/overview.html">[8]</a>.</div></div>
+  <div class="use-case"><div class="label">Facebook MyRocks</div><div class="desc">Moving the MySQL User Database from InnoDB to RocksDB cut instance size by 62.3% and more than halved the server count <a href="https://vldb.org/pvldb/vol13/p3217-matsunobu.pdf">[10]</a>.</div></div>
+  <div class="use-case"><div class="label">Embedded KV engines</div><div class="desc">RocksDB and LevelDB sit underneath many databases and stream processors; WiscKey lists HBase, Riak, and PNUTS among LSM deployments <a href="https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf">[7]</a>.</div></div>
+</div>
+
+<h3>When to reach for one</h3>
+<p>Choose an LSM-based store for high, sustained write rates such as event logs, metrics, time series, messaging, and wide-column data, or when storage efficiency matters. Lean toward leveled compaction when reads and overwrites dominate, tiered when ingest dominates, and time-window compaction when data expires by age. Watch compaction debt, tombstone buildup, and L0 file counts in production; they are the early warnings of read latency trouble.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+<li>P. O'Neil, E. Cheng, D. Gawlick, E. O'Neil. <a href="https://cs.umb.edu/~poneil/lsmtree.pdf">The Log-Structured Merge-Tree (LSM-Tree)</a>. Acta Informatica, 1996.</li>
+<li>Apache Cassandra Documentation. <a href="https://cassandra.apache.org/doc/stable/cassandra/architecture/storage-engine.html">Storage Engine</a>.</li>
+<li>F. Chang et al. <a href="https://static.googleusercontent.com/media/research.google.com/en/us/archive/bigtable-osdi06.pdf">Bigtable: A Distributed Storage System for Structured Data</a>. OSDI 2006.</li>
+<li>M. Athanassoulis et al. <a href="https://openproceedings.org/2016/conf/edbt/paper-12.pdf">Designing Access Methods: The RUM Conjecture</a>. EDBT 2016.</li>
+<li>RocksDB Wiki. <a href="https://github.com/facebook/rocksdb/wiki/Compaction">Compaction</a>.</li>
+<li><a href="https://link.springer.com/article/10.1007/s00778-020-00638-1">Comparison and evaluation of state-of-the-art LSM merge policies</a>. The VLDB Journal, 2020.</li>
+<li>L. Lu, T. S. Pillai, A. Arpaci-Dusseau, R. Arpaci-Dusseau. <a href="https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf">WiscKey: Separating Keys from Values in SSD-conscious Storage</a>. FAST 2016.</li>
+<li>Apache Cassandra Documentation. <a href="https://cassandra.apache.org/doc/latest/cassandra/managing/operating/compaction/overview.html">Compaction overview</a>.</li>
+<li>Apache Cassandra Documentation. <a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/compaction/ucs.html">Unified Compaction Strategy (UCS)</a>.</li>
+<li>Y. Matsunobu, S. Dong, H. Lee. <a href="https://vldb.org/pvldb/vol13/p3217-matsunobu.pdf">MyRocks: LSM-Tree Database Storage Engine Serving Facebook's Social Graph</a>. PVLDB 13(12), 2020.</li>
+<li>M. Callaghan. <a href="http://smalldatum.blogspot.com/2018/06/the-original-lsm-paper.html">Small Datum: The original LSM paper</a>, 2018.</li>
+</ol>
+</div>
+</body>
+</html>

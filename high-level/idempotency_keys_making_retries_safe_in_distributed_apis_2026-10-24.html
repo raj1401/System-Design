@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Idempotency Keys: Making Retries Safe in Distributed APIs</title>
+<meta name="description" content="How idempotency keys let clients safely retry non-idempotent requests like payments and resource creation, using a server-side key store, request fingerprints, atomic recording, and bounded expiry.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Idempotency Keys: Making Retries Safe in Distributed APIs</h1>
+<p class="subtitle">Why a client-generated token is the difference between &ldquo;retry until it works&rdquo; and &ldquo;charge the customer twice.&rdquo;</p>
+<p class="meta">October 24, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>In a distributed system a client that sends a request and hears nothing back cannot tell whether the request never arrived, failed halfway, or succeeded and the response got lost. Retrying is the obvious fix, but retrying a <code>POST /charges</code> can move money twice. HTTP already defines <code>GET</code>, <code>PUT</code>, and <code>DELETE</code> as idempotent, meaning that several identical requests have the same intended effect as one, while <code>POST</code> and <code>PATCH</code> are not (<a href="https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2">RFC 9110 &sect;9.2.2</a>, <a href="https://www.iana.org/assignments/http-methods">IANA method registry</a>). RFC 9110 says a client should not automatically retry a non-idempotent request unless it has a way to know the semantics are actually idempotent or that the original was never applied.</p>
+<p>An <strong>idempotency key</strong> is that way. The client generates a unique value (usually a UUID) per logical operation, sends it with every attempt, and the server uses it to recognize retries and return the original outcome instead of repeating side effects. The IETF HTTPAPI working group is standardizing this as the <code>Idempotency-Key</code> request header (<a href="https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/">draft-ietf-httpapi-idempotency-key-header-08</a>), and it is how Stripe, AWS, and many payment APIs make writes retry-safe.</p>
+
+<div class="callout"><strong>The core contract.</strong> AWS describes the goal as letting clients assume that any error that is not a validation error can be overcome by retrying the request until it succeeds. The complexity moves from every client into the service, once (<a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/">Amazon Builders&rsquo; Library</a>).</div>
+
+<h2>How It Works</h2>
+<h3>1. The client owns uniqueness</h3>
+<p>The draft spec requires the key to be unique and never reused with a different payload, and recommends a UUID or similar random identifier, sent as a Structured Field string such as <code>Idempotency-Key: "8e03978e-40d5-43e8-bc93-6894a57f9324"</code> (<a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-08">draft &sect;2.1&ndash;2.2</a>). The key identifies the <em>intent</em>, not the bytes. AWS explains why it prefers a caller-provided identifier over hashing request parameters: two identical requests to create a DynamoDB table are probably duplicates, but two identical <code>RunInstances</code> calls might genuinely mean &ldquo;I want two instances&rdquo; (<a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/">Builders&rsquo; Library</a>). Stripe also warns against putting sensitive data like email addresses into keys (<a href="https://docs.stripe.com/api/idempotent_requests">Stripe API reference</a>).</p>
+
+<h3>2. The server records key and effect atomically</h3>
+<p>On the first request the server inserts a row keyed by <code>(account, key)</code>, performs the work, and stores the response. The critical property, as AWS puts it, is that recording the token and all the mutating operations together must be ACID: if you could record the token but fail to create the resource, a retry would wrongly report success. A unique index on <code>(user_id, idempotency_key)</code> is the usual enforcement point, as in Brandur Leach&rsquo;s reference Postgres design (<a href="https://www.brandur.org/idempotency-keys">Implementing Stripe-like Idempotency Keys in Postgres</a>).</p>
+
+<h3>3. Retries are matched, compared, and replayed</h3>
+<p>A later request with the same key falls into one of four cases:</p>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Same key, same payload, finished</h4>
+    <ul>
+      <li>Return the stored status and body</li>
+      <li>No side effects run again</li>
+      <li>Stripe v1 even replays stored 500s</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">Same key, still in flight</h4>
+    <ul>
+      <li>Reject with <code>409 Conflict</code></li>
+      <li>Client backs off and retries later</li>
+      <li>Prevents two workers racing</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">Same key, different payload</h4>
+    <ul>
+      <li>Reject as client misuse</li>
+      <li>Draft spec suggests <code>422</code></li>
+      <li>EC2 returns <code>IdempotentParameterMismatch</code></li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Key missing or expired</h4>
+    <ul>
+      <li><code>400</code> if the endpoint requires a key</li>
+      <li>After expiry, treated as a new request</li>
+      <li>Expiry window must be documented</li>
+    </ul>
+  </div>
+</div>
+<p>To detect a changed payload the server keeps an <strong>idempotency fingerprint</strong>, such as a checksum of the whole body or of selected fields (<a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-08">draft &sect;2.4</a>). Stripe&rsquo;s idempotency layer compares incoming parameters to the original and errors if they differ (<a href="https://docs.stripe.com/api/idempotent_requests">Stripe</a>); EC2 does the same with client tokens of up to 64 ASCII characters (<a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">EC2 idempotency guide</a>).</p>
+
+<div class="diagram-container">
+<h4>Idempotent retry after a lost response</h4>
+<svg width="740" height="400" viewBox="0 0 740 400" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+    <marker id="arG" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4ecdc4"/></marker>
+    <marker id="arP" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker>
+  </defs>
+  <rect x="40" y="16" width="120" height="36" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="100" y="39" fill="#e1e4ed" font-size="13" text-anchor="middle">Client</text>
+  <rect x="310" y="16" width="120" height="36" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="370" y="39" fill="#e1e4ed" font-size="13" text-anchor="middle">API service</text>
+  <rect x="580" y="16" width="130" height="36" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="645" y="39" fill="#e1e4ed" font-size="13" text-anchor="middle">Key store + DB</text>
+  <line x1="100" y1="52" x2="100" y2="390" stroke="#2e3345" stroke-dasharray="4 4"/>
+  <line x1="370" y1="52" x2="370" y2="390" stroke="#2e3345" stroke-dasharray="4 4"/>
+  <line x1="645" y1="52" x2="645" y2="390" stroke="#2e3345" stroke-dasharray="4 4"/>
+
+  <line x1="100" y1="85" x2="366" y2="85" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <text x="235" y="78" fill="#e1e4ed" font-size="11" text-anchor="middle">POST /charges  Key: k1</text>
+  <line x1="370" y1="115" x2="641" y2="115" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <text x="507" y="108" fill="#8b90a0" font-size="11" text-anchor="middle">INSERT k1 (locked) + charge, 1 txn</text>
+  <line x1="645" y1="145" x2="374" y2="145" stroke="#4ecdc4" marker-end="url(#arG)"/>
+  <text x="507" y="138" fill="#4ecdc4" font-size="11" text-anchor="middle">commit, store 201 response</text>
+  <line x1="370" y1="175" x2="200" y2="175" stroke="#ff6b9d" stroke-dasharray="5 3"/>
+  <text x="185" y="179" fill="#ff6b9d" font-size="16" text-anchor="middle">&#10007;</text>
+  <text x="285" y="168" fill="#ff6b9d" font-size="11" text-anchor="middle">201 lost (timeout)</text>
+
+  <rect x="40" y="200" width="240" height="26" rx="6" fill="#1a1d27" stroke="#2e3345"/>
+  <text x="160" y="217" fill="#8b90a0" font-size="11" text-anchor="middle">backoff, then retry with the SAME key</text>
+
+  <line x1="100" y1="250" x2="366" y2="250" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <text x="235" y="243" fill="#e1e4ed" font-size="11" text-anchor="middle">POST /charges  Key: k1</text>
+  <line x1="370" y1="280" x2="641" y2="280" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <text x="507" y="273" fill="#8b90a0" font-size="11" text-anchor="middle">lookup k1, compare fingerprint</text>
+  <line x1="645" y1="310" x2="374" y2="310" stroke="#4ecdc4" marker-end="url(#arG)"/>
+  <text x="507" y="303" fill="#4ecdc4" font-size="11" text-anchor="middle">found: finished, stored 201</text>
+  <line x1="370" y1="345" x2="104" y2="345" stroke="#4ecdc4" marker-end="url(#arG)"/>
+  <text x="235" y="338" fill="#4ecdc4" font-size="11" text-anchor="middle">replay 201 (no second charge)</text>
+  <text x="370" y="382" fill="#ffd93d" font-size="11" text-anchor="middle">Exactly one charge exists, and the client finally learns about it.</text>
+</svg>
+</div>
+
+<h3>4. Multi-step requests need recovery points</h3>
+<p>Atomicity is easy when everything lives in one database transaction. It breaks when the request calls an external service (a card network, an email provider) that cannot be rolled back. Brandur&rsquo;s design splits the request into <strong>atomic phases</strong>: local mutations committed in one transaction between each foreign call. After each phase the key row&rsquo;s <code>recovery_point</code> advances (for example <code>started</code>, <code>ride_created</code>, <code>charge_created</code>, <code>finished</code>), so a retry resumes just before the step that failed instead of starting over (<a href="https://www.brandur.org/idempotency-keys">brandur.org</a>, <a href="https://github.com/brandur/rocket-rides-atomic">rocket-rides-atomic</a>). Ideally the external call is itself idempotent, so you pass your own key downstream.</p>
+
+<div class="diagram-container">
+<h4>Idempotency key lifecycle with recovery points</h4>
+<svg width="740" height="190" viewBox="0 0 740 190" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker></defs>
+  <rect x="20" y="60" width="120" height="50" rx="10" fill="#232733" stroke="#6c8cff"/>
+  <text x="80" y="82" fill="#e1e4ed" font-size="13" text-anchor="middle">started</text>
+  <text x="80" y="99" fill="#8b90a0" font-size="10" text-anchor="middle">key upserted, locked</text>
+  <rect x="200" y="60" width="140" height="50" rx="10" fill="#232733" stroke="#4ecdc4"/>
+  <text x="270" y="82" fill="#e1e4ed" font-size="13" text-anchor="middle">order_created</text>
+  <text x="270" y="99" fill="#8b90a0" font-size="10" text-anchor="middle">local txn committed</text>
+  <rect x="400" y="60" width="140" height="50" rx="10" fill="#232733" stroke="#ffd93d"/>
+  <text x="470" y="82" fill="#e1e4ed" font-size="13" text-anchor="middle">charge_created</text>
+  <text x="470" y="99" fill="#8b90a0" font-size="10" text-anchor="middle">external call done</text>
+  <rect x="600" y="60" width="120" height="50" rx="10" fill="#232733" stroke="#ff6b9d"/>
+  <text x="660" y="82" fill="#e1e4ed" font-size="13" text-anchor="middle">finished</text>
+  <text x="660" y="99" fill="#8b90a0" font-size="10" text-anchor="middle">response cached</text>
+  <line x1="140" y1="85" x2="196" y2="85" stroke="#6c8cff" marker-end="url(#a2)"/>
+  <line x1="340" y1="85" x2="396" y2="85" stroke="#6c8cff" marker-end="url(#a2)"/>
+  <line x1="540" y1="85" x2="596" y2="85" stroke="#6c8cff" marker-end="url(#a2)"/>
+  <path d="M470,110 C470,160 270,160 270,114" fill="none" stroke="#8b90a0" stroke-dasharray="4 3" marker-end="url(#a2)"/>
+  <text x="370" y="168" fill="#8b90a0" font-size="11" text-anchor="middle">crash mid-call: retry reads recovery_point and resumes here</text>
+  <text x="370" y="30" fill="#e1e4ed" font-size="12" text-anchor="middle">Each arrow is one atomic phase; the cursor advances inside the same transaction</text>
+</svg>
+</div>
+
+<h3>5. Keys expire on a published schedule</h3>
+<p>Key stores cannot grow forever. The draft lets servers define a time-based expiry and says they should publish it (<a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-08">draft &sect;2.3</a>; see also <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Idempotency-Key">MDN</a>). Stripe API v1 can prune keys once they are at least 24 hours old, and a key reused after pruning becomes a new request; Stripe API v2 widens the replay window to 30 days and, instead of replaying a stored error, retries failed work to completion where possible (<a href="https://docs.stripe.com/api-v2-overview">Stripe API v2 overview</a>). The window should comfortably exceed the client&rsquo;s total retry budget.</p>
+
+<div class="callout"><strong>Not every failure should be retried.</strong> Stripe v1 does not save a result when validation fails or a concurrent request with the same key is still running, so those can be retried (<a href="https://docs.stripe.com/api/idempotent_requests">Stripe</a>). The EC2 guide recommends not retrying 4xx client errors but retrying 5xx server errors with backoff (<a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">EC2</a>). For connection errors, Stripe advises treating the outcome as indeterminate and reconciling it before issuing a brand-new operation (<a href="https://docs.stripe.com/error-handling">Stripe error handling</a>).</div>
+
+<h2>Design Pitfalls</h2>
+<p><strong>Check-then-act races.</strong> Reading &ldquo;does k1 exist?&rdquo; and then inserting lets two concurrent retries both proceed. Rely on a unique constraint or conditional write and a lock column so exactly one attempt owns the key. <strong>Scoping.</strong> Scope keys per account, so one tenant&rsquo;s UUID never collides with another&rsquo;s. <strong>Regenerating keys on retry.</strong> A key must be created once per user intent (for example when the checkout form loads), not per HTTP attempt; Stripe&rsquo;s SDKs generate keys and reuse them on automatic retries (<a href="https://docs.stripe.com/error-handling">Stripe</a>). <strong>Caching too little.</strong> Store the full status and body so replays are byte-identical to what the client would have seen.</p>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Payments</div><div class="desc">Stripe accepts <code>Idempotency-Key</code> on every v1 <code>POST</code> and every v2 <code>POST</code> and <code>DELETE</code>, so a timed-out charge can be retried without double billing.</div></div>
+  <div class="use-case"><div class="label">Cloud control planes</div><div class="desc">EC2&rsquo;s <code>ClientToken</code> makes <code>RunInstances</code> and similar calls retry-safe, and the token is visible on the created resource for auditing.</div></div>
+  <div class="use-case"><div class="label">Event streaming</div><div class="desc">Kafka&rsquo;s idempotent producer applies the same idea at the protocol level: a producer ID plus per-partition sequence numbers let brokers discard duplicate retries (<a href="https://cwiki.apache.org/confluence/spaces/KAFKA/pages/66854913/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging">KIP-98</a>).</div></div>
+  <div class="use-case"><div class="label">Order and booking APIs</div><div class="desc">Checkout, ride-hailing, and reservation flows that call external providers use recovery-point state machines so a crash mid-request resumes rather than duplicates.</div></div>
+</div>
+<p>Kafka&rsquo;s version is a useful reminder of scope: <code>enable.idempotence</code> dedupes retries within one producer session, and requires settings such as <code>acks=all</code> (<a href="https://kafka.apache.org/42/configuration/producer-configs/">Kafka producer configs</a>, <a href="https://docs.confluent.io/kafka/design/delivery-semantics.html">Confluent delivery semantics</a>). End-to-end, application-level keys are still needed when the sender itself restarts. Idempotency keys pair naturally with the <em>at-least-once delivery</em> and <em>transactional outbox</em> patterns covered earlier in this series: those guarantee a message is delivered, and idempotency guarantees delivering it twice is harmless.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>Jena, Dalal, Tishkin. <a href="https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-idempotency-key-header-08">The Idempotency-Key HTTP Header Field, draft-ietf-httpapi-idempotency-key-header-08</a>. IETF HTTPAPI WG, October 2026. (<a href="https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/">Datatracker status</a>)</li>
+  <li>Fielding, Nottingham, Reschke. <a href="https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2">RFC 9110: HTTP Semantics, &sect;9.2.2 Idempotent Methods</a>. IETF, 2022.</li>
+  <li>IANA. <a href="https://www.iana.org/assignments/http-methods">Hypertext Transfer Protocol (HTTP) Method Registry</a>.</li>
+  <li>MDN Web Docs. <a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Idempotency-Key">Idempotency-Key header</a>.</li>
+  <li>Featonby, M. <a href="https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/">Making retries safe with idempotent APIs</a>. Amazon Builders&rsquo; Library.</li>
+  <li>AWS. <a href="https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html">Ensuring idempotency in Amazon EC2 API requests</a>.</li>
+  <li>Stripe. <a href="https://docs.stripe.com/api/idempotent_requests">Idempotent requests (API reference)</a>.</li>
+  <li>Stripe. <a href="https://docs.stripe.com/api-v2-overview">API v2 overview: Idempotency</a>.</li>
+  <li>Stripe. <a href="https://docs.stripe.com/error-handling">Error handling</a>.</li>
+  <li>Leach, B. <a href="https://www.brandur.org/idempotency-keys">Implementing Stripe-like Idempotency Keys in Postgres</a>. brandur.org.</li>
+  <li>Leach, B. <a href="https://github.com/brandur/rocket-rides-atomic">rocket-rides-atomic</a> (reference implementation). GitHub.</li>
+  <li>Apache Kafka. <a href="https://cwiki.apache.org/confluence/spaces/KAFKA/pages/66854913/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging">KIP-98: Exactly Once Delivery and Transactional Messaging</a>.</li>
+  <li>Apache Kafka. <a href="https://kafka.apache.org/42/configuration/producer-configs/">Producer Configs</a>.</li>
+  <li>Confluent. <a href="https://docs.confluent.io/kafka/design/delivery-semantics.html">Kafka Message Delivery Guarantees</a>.</li>
+</ol>
+</div>
+</body>
+</html>

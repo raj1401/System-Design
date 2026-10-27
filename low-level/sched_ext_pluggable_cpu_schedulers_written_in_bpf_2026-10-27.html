@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sched_ext: Pluggable CPU Schedulers Written in BPF</title>
+<meta name="description" content="How Linux sched_ext lets you load a whole CPU scheduler as BPF programs at runtime, using dispatch queues and a struct_ops callback table, with a watchdog that falls back to the fair scheduler if anything goes wrong.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>sched_ext: Pluggable CPU Schedulers Written in BPF</h1>
+<p class="subtitle">How Linux learned to hot-swap its CPU scheduler without a reboot, and without trusting the new one.</p>
+<p class="meta">October 27, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>For two decades the Linux answer to &ldquo;can I plug in my own scheduler?&rdquo; was no: the community argued that one general-purpose fair scheduler, tuned by everyone, beats a zoo of special-purpose ones (<a href="https://lwn.net/Articles/922405/">LWN, 2023</a>). <strong>sched_ext</strong> changes that. It is a new scheduling class whose policy is defined entirely by a set of BPF programs, the <em>BPF scheduler</em>, loaded from user space at runtime (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>). It was merged for Linux 6.12 (<a href="https://lwn.net/Articles/991205/">LWN, LPC 2024</a>).</p>
+<p>The trick that made it acceptable is safety: the BPF verifier guarantees the scheduler code can&rsquo;t crash the kernel, and a kernel-side watchdog guarantees it can&rsquo;t starve the machine. If a runnable task stalls, the BPF program hits an error, or an operator presses <code>SysRq-S</code>, every task is reverted to the fair-class scheduler and the system carries on (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>).</p>
+
+<h2>Deeper dive</h2>
+<h3>A scheduling class, not a replacement</h3>
+<p>Linux already has a stack of scheduling classes (stop, deadline, realtime, fair, idle) that the core walks in priority order. sched_ext slots in as <code>SCHED_EXT</code> <em>below</em> the fair class, so a BPF scheduler can never starve realtime work or, in partial mode, an ordinary shell running as <code>SCHED_NORMAL</code> (<a href="https://lwn.net/Articles/922405/">LWN</a>). Tasks opt in with <a href="https://man7.org/linux/man-pages/man2/sched_setscheduler.2.html"><code>sched_setscheduler()</code></a>. If no BPF scheduler is loaded, <code>SCHED_EXT</code> tasks simply run as <code>SCHED_NORMAL</code>. Once one is loaded without <code>SCX_OPS_SWITCH_PARTIAL</code>, it takes over all normal, batch, idle and ext tasks; with that flag it only takes the tasks that asked for it (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>).</p>
+
+<h3>The callback table: <code>struct sched_ext_ops</code></h3>
+<p>A BPF scheduler is a <code>struct sched_ext_ops</code> filled with BPF programs and registered through BPF&rsquo;s <code>struct_ops</code> mechanism. Only <code>ops.name</code> is mandatory; every callback is optional and has a sane default (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>). The important ones are:</p>
+<ul style="margin:0 0 16px 22px">
+<li><code>select_cpu()</code>: called when a task wakes; returns a CPU hint and wakes that CPU if idle. The hint isn&rsquo;t binding.</li>
+<li><code>enqueue()</code>: decides where the runnable task waits: a built-in queue, a custom queue, or the scheduler&rsquo;s own BPF maps.</li>
+<li><code>dispatch()</code>: called when a CPU runs dry; refills its local queue.</li>
+<li><code>runnable()</code>, <code>running()</code>, <code>stopping()</code>, <code>quiescent()</code>: state notifications used for accounting such as virtual runtime.</li>
+<li><code>cpu_acquire()</code> / <code>cpu_release()</code>: tell the BPF side when a higher class takes or returns a CPU (<a href="https://lwn.net/Articles/922405/">LWN</a>).</li>
+</ul>
+
+<h3>Dispatch queues (DSQs)</h3>
+<p>The core scheduler and a BPF program think about time very differently, so sched_ext puts <strong>dispatch queues</strong> between them. A DSQ can be a FIFO or a vtime-ordered priority queue. There is one global DSQ (<code>SCX_DSQ_GLOBAL</code>), one local DSQ per CPU (<code>SCX_DSQ_LOCAL</code>), and as many custom DSQs as the scheduler creates with <code>scx_bpf_create_dsq()</code>. The invariant is simple: <strong>a CPU only ever runs tasks from its own local DSQ</strong>. Everything else is about moving tasks into the right local DSQ at the right moment (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>).</p>
+<p>When a CPU needs work it checks its local DSQ, then tries to move a task from the global DSQ, then calls <code>ops.dispatch()</code>, which can insert tasks with <code>scx_bpf_dsq_insert()</code> or pull from a custom DSQ with <code>scx_bpf_dsq_move_to_local()</code>. If that still yields nothing and the previous task is runnable, it keeps running; otherwise the CPU goes idle.</p>
+
+<div class="diagram-container">
+<h4>Scheduling cycle of a waking task under sched_ext</h4>
+<svg width="760" height="360" viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="20" y="30" width="130" height="50" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="85" y="52" fill="#e1e4ed" font-size="13" text-anchor="middle">Task wakes</text>
+  <text x="85" y="69" fill="#8b90a0" font-size="11" text-anchor="middle">fork / exec / wakeup</text>
+  <rect x="190" y="30" width="160" height="50" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="270" y="52" fill="#e1e4ed" font-size="13" text-anchor="middle">ops.select_cpu()</text>
+  <text x="270" y="69" fill="#8b90a0" font-size="11" text-anchor="middle">CPU hint, wake idle CPU</text>
+  <rect x="390" y="30" width="160" height="50" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="470" y="52" fill="#e1e4ed" font-size="13" text-anchor="middle">ops.enqueue()</text>
+  <text x="470" y="69" fill="#8b90a0" font-size="11" text-anchor="middle">choose where to wait</text>
+  <line x1="150" y1="55" x2="188" y2="55" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <line x1="350" y1="55" x2="388" y2="55" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <path d="M270,80 C270,240 300,250 330,262" stroke="#4ecdc4" fill="none" stroke-dasharray="5 4" marker-end="url(#ar)"/>
+  <text x="200" y="170" fill="#4ecdc4" font-size="11">direct insert to</text>
+  <text x="200" y="184" fill="#4ecdc4" font-size="11">SCX_DSQ_LOCAL</text>
+  <text x="200" y="198" fill="#4ecdc4" font-size="11">(skips enqueue)</text>
+  <rect x="380" y="130" width="120" height="44" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="440" y="150" fill="#e1e4ed" font-size="12" text-anchor="middle">Custom DSQs</text>
+  <text x="440" y="165" fill="#8b90a0" font-size="10" text-anchor="middle">FIFO or vtime</text>
+  <rect x="520" y="130" width="110" height="44" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="575" y="150" fill="#e1e4ed" font-size="12" text-anchor="middle">BPF maps</text>
+  <text x="575" y="165" fill="#8b90a0" font-size="10" text-anchor="middle">BPF custody</text>
+  <rect x="640" y="130" width="110" height="44" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="695" y="150" fill="#e1e4ed" font-size="12" text-anchor="middle">Global DSQ</text>
+  <text x="695" y="165" fill="#8b90a0" font-size="10" text-anchor="middle">SCX_DSQ_GLOBAL</text>
+  <line x1="450" y1="80" x2="440" y2="128" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <line x1="490" y1="80" x2="570" y2="128" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <line x1="530" y1="80" x2="690" y2="128" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <rect x="440" y="215" width="200" height="44" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="540" y="235" fill="#e1e4ed" font-size="13" text-anchor="middle">ops.dispatch()</text>
+  <text x="540" y="250" fill="#8b90a0" font-size="10" text-anchor="middle">CPU ran dry: refill local DSQ</text>
+  <line x1="440" y1="174" x2="500" y2="213" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <line x1="575" y1="174" x2="560" y2="213" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <rect x="300" y="290" width="200" height="50" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="400" y="311" fill="#e1e4ed" font-size="13" text-anchor="middle">CPU local DSQ</text>
+  <text x="400" y="328" fill="#8b90a0" font-size="10" text-anchor="middle">the only queue a CPU runs from</text>
+  <line x1="520" y1="259" x2="450" y2="288" stroke="#8b90a0" marker-end="url(#ar)"/>
+  <path d="M695,174 C700,300 600,315 502,315" stroke="#8b90a0" fill="none" marker-end="url(#ar)"/>
+  <text x="640" y="300" fill="#8b90a0" font-size="10">checked before dispatch()</text>
+  <rect x="560" y="290" width="0" height="0"/>
+  <text x="80" y="315" fill="#ff6b9d" font-size="12" text-anchor="middle">Runs on CPU</text>
+  <line x1="298" y1="315" x2="140" y2="315" stroke="#ff6b9d" marker-end="url(#ar)"/>
+</svg>
+</div>
+
+<h3>Custody and the watchdog</h3>
+<p>Because <code>enqueue()</code> is allowed to stash a task in a BPF map and not queue it anywhere visible, the kernel tracks which tasks are in the &ldquo;BPF scheduler&rsquo;s custody&rdquo; and calls <code>ops.dequeue()</code> exactly once when a task leaves it, for example on dispatch, sleep, or an affinity change (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>). It also watches the clock: a runnable task left waiting too long (30 seconds by default in the original design) gets the BPF scheduler unloaded (<a href="https://lwn.net/Articles/922405/">LWN</a>). That is what turns &ldquo;a buggy policy&rdquo; from an outage into a log message.</p>
+
+<div class="diagram-container">
+<h4>Class stack and the fail-safe path</h4>
+<svg width="700" height="230" viewBox="0 0 700 230" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="ar2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker></defs>
+  <text x="130" y="20" fill="#8b90a0" font-size="11" text-anchor="middle">higher priority</text>
+  <rect x="40" y="30" width="180" height="30" rx="6" fill="#232733" stroke="#8b90a0"/><text x="130" y="50" fill="#e1e4ed" font-size="12" text-anchor="middle">stop / deadline</text>
+  <rect x="40" y="66" width="180" height="30" rx="6" fill="#232733" stroke="#8b90a0"/><text x="130" y="86" fill="#e1e4ed" font-size="12" text-anchor="middle">realtime (FIFO / RR)</text>
+  <rect x="40" y="102" width="180" height="30" rx="6" fill="#232733" stroke="#6c8cff"/><text x="130" y="122" fill="#e1e4ed" font-size="12" text-anchor="middle">fair (EEVDF)</text>
+  <rect x="40" y="138" width="180" height="30" rx="6" fill="#1a1d27" stroke="#4ecdc4" stroke-width="2"/><text x="130" y="158" fill="#4ecdc4" font-size="12" text-anchor="middle">ext (BPF scheduler)</text>
+  <rect x="40" y="174" width="180" height="30" rx="6" fill="#232733" stroke="#8b90a0"/><text x="130" y="194" fill="#e1e4ed" font-size="12" text-anchor="middle">idle</text>
+  <rect x="330" y="60" width="330" height="110" rx="10" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="495" y="85" fill="#ff6b9d" font-size="13" text-anchor="middle">Abort triggers</text>
+  <text x="350" y="108" fill="#e1e4ed" font-size="12">runnable task stalls past the watchdog timeout</text>
+  <text x="350" y="128" fill="#e1e4ed" font-size="12">BPF scheduler reports an error or exits</text>
+  <text x="350" y="148" fill="#e1e4ed" font-size="12">operator presses SysRq-S</text>
+  <path d="M330,130 C280,130 260,118 222,118" stroke="#ff6b9d" fill="none" marker-end="url(#ar2)"/>
+  <text x="275" y="110" fill="#ff6b9d" font-size="10" text-anchor="middle">tasks revert</text>
+</svg>
+</div>
+
+<div class="callout"><strong>Why BPF and not a kernel module?</strong> A module can scribble anywhere; a BPF scheduler passes the verifier, can only call approved kfuncs like <code>scx_bpf_dsq_insert()</code>, and can be detached at any moment. That is what lets a fleet operator try a new policy on live machines and roll back instantly, which a pluggable-module design could never promise (<a href="https://github.com/sched-ext/scx/blob/main/OVERVIEW.md">scx overview</a>).</div>
+
+<h3>A minimal scheduler</h3>
+<p>The in-tree <a href="https://github.com/torvalds/linux/blob/master/tools/sched_ext/scx_simple.bpf.c"><code>scx_simple</code></a> example is a global FIFO in a handful of lines: <code>select_cpu()</code> calls <code>scx_bpf_select_cpu_dfl()</code> and, if it found an idle core, inserts straight into <code>SCX_DSQ_LOCAL</code>; otherwise <code>enqueue()</code> inserts into <code>SCX_DSQ_GLOBAL</code> with the default slice. You check what is running with <code>cat /sys/kernel/sched_ext/root/ops</code>, and per-scheduler counters such as fallback CPU picks live in <code>/sys/kernel/sched_ext/root/events</code> (<a href="https://docs.kernel.org/scheduler/sched-ext.html">kernel docs</a>).</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Fair class (EEVDF)</h4>
+    <ul>
+      <li>One policy for every workload</li>
+      <li>Changes need a kernel patch, review, and reboot</li>
+      <li>Tuned for broad fairness and latency</li>
+      <li>Always present as the fallback</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">sched_ext</h4>
+    <ul>
+      <li>Policy is a BPF program loaded at runtime</li>
+      <li>Swap or roll back without rebooting</li>
+      <li>Can specialise for games, VMs, or one service</li>
+      <li>Watchdog reverts to fair on any failure</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Fleet partitioning</div><div class="desc"><code>scx_layered</code> splits CPUs into layers per workload class; it was reported deployed on over a million machines (<a href="https://lwn.net/Articles/991205/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">Gaming</div><div class="desc"><code>scx_lavd</code> targets interactivity and steady frame rates and was headed for Steam Deck devices (<a href="https://lwn.net/Articles/991205/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">Desktop responsiveness</div><div class="desc"><code>scx_bpfland</code> minimises response time on personal machines; distributions such as Arch, Ubuntu, Fedora and CachyOS ship sched_ext packages (<a href="https://lwn.net/Articles/991205/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">VM hosting</div><div class="desc">A &ldquo;central&rdquo; design dedicates one CPU to scheduling decisions and runs the rest tickless; Google reported benefits for VM hosting with that approach (<a href="https://lwn.net/Articles/922405/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">User-space policy</div><div class="desc"><code>scx_rustland</code> forwards scheduling events to a Rust user-space process that makes the decisions, for observability and fast iteration (<a href="https://lwn.net/Articles/991205/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">Research and teaching</div><div class="desc">New ideas can be tried on a live machine in minutes; the <a href="https://github.com/sched-ext/scx">sched-ext/scx</a> repo collects many production and example schedulers.</div></div>
+</div>
+
+<div class="callout"><strong>Design takeaway.</strong> sched_ext is a pattern worth copying beyond kernels: expose a narrow, queue-based contract to untrusted policy code, keep the invariants (every runnable task eventually runs) enforced by the host, and make the fallback path always available.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/scheduler/sched-ext.html">Extensible Scheduler Class, Linux kernel documentation</a></li>
+  <li><a href="https://lwn.net/Articles/922405/">Jonathan Corbet, &ldquo;The extensible scheduler class&rdquo;, LWN.net, Feb 2023</a></li>
+  <li><a href="https://lwn.net/Articles/991205/">Jonathan Corbet, &ldquo;Sched_ext at LPC 2024&rdquo;, LWN.net, Sep 2024</a></li>
+  <li><a href="https://github.com/sched-ext/scx">sched-ext/scx: sched_ext schedulers and tools (GitHub)</a></li>
+  <li><a href="https://github.com/sched-ext/scx/blob/main/OVERVIEW.md">sched_ext overview document, sched-ext/scx</a></li>
+  <li><a href="https://github.com/torvalds/linux/blob/master/tools/sched_ext/scx_simple.bpf.c">tools/sched_ext/scx_simple.bpf.c, Linux source</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man2/sched_setscheduler.2.html">sched_setscheduler(2), Linux man pages</a></li>
+  <li><a href="https://docs.kernel.org/bpf/">BPF documentation, Linux kernel</a></li>
+</ol>
+</div>
+</body>
+</html>

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kernel Page-Table Isolation (KPTI): How Linux Hid the Kernel from Meltdown</title>
+<meta name="description" content="How Linux Kernel Page-Table Isolation gives every process two page tables so user mode cannot even see kernel addresses, why that stops Meltdown, and how PCIDs keep the CR3 switch on every syscall from flushing the TLB.">
+<style> block into the document's <head> EXACTLY as written, character for character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Kernel Page-Table Isolation (KPTI): How Linux Hid the Kernel from Meltdown</h1>
+<p class="subtitle">Two page tables per process, a CR3 switch on every kernel entry, and PCIDs to keep the TLB alive.</p>
+<p class="meta">October 30, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>For decades, x86 operating systems mapped the whole kernel into the upper half of every process's address space. User code could not <em>touch</em> those pages, because the page-table entries lacked the user bit, but the translations were present, so a syscall never had to change page tables. In January 2018 <a href="https://www.usenix.org/system/files/conference/usenixsecurity18/sec18-lipp.pdf">Meltdown</a> showed that out-of-order execution on many CPUs would transiently load kernel data before the permission check retired, leaking it through a cache side channel. A permission bit was no longer a wall.</p>
+<p>Kernel Page-Table Isolation (KPTI, called <code>pti</code> in the kernel and originally <a href="https://gruss.cc/files/kaiser.pdf">KAISER</a>) answers by removing the translations themselves. Each process gets two top-level page tables: a full one used while running in the kernel, and a stripped one used in user mode that maps only the tiny trampoline needed to enter and leave the kernel. If no translation exists, there is nothing for speculation to load. It was merged in Linux 4.15 and backported to 4.14.11, 4.9.75 and 4.4.110 (<a href="https://en.wikipedia.org/wiki/Kernel_page-table_isolation">overview</a>).</p>
+
+<h2>Deeper dive: the mechanism</h2>
+<h3>From KASLR defence to Meltdown fix</h3>
+<p>KAISER was published by Gruss et al. at Graz in 2017 to stop hardware side channels (page-fault timing, prefetch, TSX) that revealed <em>where</em> the randomized kernel lived; the paper reported a 0.28% overhead on its prototype (<a href="https://gruss.cc/files/kaiser.pdf">Gruss et al.</a>). When Meltdown surfaced, the same authors noted in the <a href="https://www.usenix.org/system/files/conference/usenixsecurity18/sec18-lipp.pdf">Meltdown paper</a> that KAISER inadvertently blocked it too, since neither kernel memory nor the direct physical map is resolvable from user mode. Dave Hansen's port, reworked by Thomas Gleixner, Peter Zijlstra, Andy Lutomirski and Hugh Dickins, went through 163 internal revisions before landing (<a href="https://lwn.net/Articles/741878/">LWN, Dec 2017</a>).</p>
+
+<h3>Two PGDs, one set of user page tables</h3>
+<p>Per the <a href="https://docs.kernel.org/arch/x86/pti.html">kernel PTI documentation</a>, each process's PGD becomes an order-1 allocation (two adjacent 4 KiB pages, costing an extra 4 KiB per process). The kernel half maps everything; the user half maps user memory plus only <code>struct cpu_entry_area</code>, a per-CPU fixmap region holding the entry/exit stubs, the IDT, and the TSS. Crucially, only the top level is duplicated: whenever the kernel sets a user PGD entry it mirrors it into the user copy, so both PGDs point at the <em>same</em> lower-level tables. There is one PTE to lock and one set of accessed and dirty bits.</p>
+<p>A safety trick: the user portion of the <em>kernel</em> PGD is marked NX at the top level. If an exit path ever forgets to switch back to the user CR3, userspace crashes on its first instruction instead of silently running with the kernel mapped.</p>
+
+<div class="diagram-container">
+<h4>One process, two top-level page tables</h4>
+<svg width="740" height="330" viewBox="0 0 740 330" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <rect x="20" y="20" width="200" height="130" rx="10" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="120" y="45" fill="#6c8cff" font-size="14" font-weight="600" text-anchor="middle">Kernel PGD (page 0)</text>
+  <text x="120" y="75" fill="#e1e4ed" font-size="12" text-anchor="middle">user half (NX at top)</text>
+  <text x="120" y="100" fill="#e1e4ed" font-size="12" text-anchor="middle">entire kernel + direct map</text>
+  <text x="120" y="130" fill="#8b90a0" font-size="11" text-anchor="middle">active in kernel mode</text>
+  <rect x="20" y="180" width="200" height="130" rx="10" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="120" y="205" fill="#4ecdc4" font-size="14" font-weight="600" text-anchor="middle">User PGD (page 1)</text>
+  <text x="120" y="235" fill="#e1e4ed" font-size="12" text-anchor="middle">user half (executable)</text>
+  <text x="120" y="260" fill="#e1e4ed" font-size="12" text-anchor="middle">cpu_entry_area only</text>
+  <text x="120" y="290" fill="#8b90a0" font-size="11" text-anchor="middle">active in user mode</text>
+  <rect x="330" y="110" width="170" height="90" rx="10" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="415" y="140" fill="#ffd93d" font-size="13" font-weight="600" text-anchor="middle">Shared P4D/PUD/</text>
+  <text x="415" y="160" fill="#ffd93d" font-size="13" font-weight="600" text-anchor="middle">PMD/PTE for user</text>
+  <text x="415" y="185" fill="#8b90a0" font-size="11" text-anchor="middle">one copy, one lock</text>
+  <rect x="560" y="30" width="160" height="80" rx="10" fill="#1a1d27" stroke="#6c8cff" stroke-width="2"/>
+  <text x="640" y="62" fill="#e1e4ed" font-size="12" text-anchor="middle">Kernel text, heap,</text>
+  <text x="640" y="82" fill="#e1e4ed" font-size="12" text-anchor="middle">physmap (secrets)</text>
+  <rect x="560" y="220" width="160" height="80" rx="10" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="640" y="250" fill="#ff6b9d" font-size="12" font-weight="600" text-anchor="middle">cpu_entry_area</text>
+  <text x="640" y="270" fill="#e1e4ed" font-size="11" text-anchor="middle">entry stubs, IDT, TSS</text>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <line x1="220" y1="75" x2="330" y2="140" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="220" y1="235" x2="330" y2="175" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="220" y1="100" x2="560" y2="70" stroke="#6c8cff" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="220" y1="100" x2="560" y2="250" stroke="#6c8cff" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  <line x1="220" y1="260" x2="560" y2="260" stroke="#4ecdc4" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+</div>
+
+<h3>The CR3 dance on every entry and exit</h3>
+<p>Because the user PGD lacks most of the kernel, the very first instructions of a syscall, interrupt, exception or NMI must run from the mapped trampoline and switch CR3 to the kernel PGD before touching anything else; the exit path switches back just before <code>sysret</code>/<code>iret</code>. In the entry assembly (<a href="https://elixir.bootlin.com/linux/latest/source/arch/x86/entry/calling.h">arch/x86/entry/calling.h</a>), the <code>SWITCH_TO_KERNEL_CR3</code> and <code>SWITCH_TO_USER_CR3</code> macros flip a single page-sized bit in CR3 to move between the two halves of the order-1 PGD, plus a PCID bit described below. The docs put a CR3 write at "on the order of a hundred cycles," paid twice per kernel round trip (<a href="https://docs.kernel.org/arch/x86/pti.html">PTI docs</a>).</p>
+
+<div class="diagram-container">
+<h4>A syscall under KPTI</h4>
+<svg width="740" height="200" viewBox="0 0 740 200" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="b" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="10" y="60" width="120" height="70" rx="8" fill="#232733" stroke="#4ecdc4" stroke-width="2"/>
+  <text x="70" y="90" fill="#4ecdc4" font-size="13" font-weight="600" text-anchor="middle">User code</text>
+  <text x="70" y="110" fill="#8b90a0" font-size="11" text-anchor="middle">user CR3, PCID u</text>
+  <rect x="160" y="60" width="130" height="70" rx="8" fill="#232733" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="225" y="88" fill="#ff6b9d" font-size="12" font-weight="600" text-anchor="middle">Entry trampoline</text>
+  <text x="225" y="108" fill="#e1e4ed" font-size="11" text-anchor="middle">cpu_entry_area</text>
+  <rect x="320" y="60" width="120" height="70" rx="8" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="380" y="88" fill="#ffd93d" font-size="12" font-weight="600" text-anchor="middle">mov to CR3</text>
+  <text x="380" y="108" fill="#e1e4ed" font-size="11" text-anchor="middle">kernel PGD, PCID k</text>
+  <rect x="470" y="60" width="120" height="70" rx="8" fill="#232733" stroke="#6c8cff" stroke-width="2"/>
+  <text x="530" y="90" fill="#6c8cff" font-size="13" font-weight="600" text-anchor="middle">Syscall body</text>
+  <text x="530" y="110" fill="#8b90a0" font-size="11" text-anchor="middle">full kernel mapped</text>
+  <rect x="620" y="60" width="110" height="70" rx="8" fill="#1a1d27" stroke="#ffd93d" stroke-width="2"/>
+  <text x="675" y="88" fill="#ffd93d" font-size="12" font-weight="600" text-anchor="middle">mov to CR3</text>
+  <text x="675" y="108" fill="#e1e4ed" font-size="11" text-anchor="middle">back to user</text>
+  <line x1="130" y1="95" x2="160" y2="95" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="290" y1="95" x2="320" y2="95" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="440" y1="95" x2="470" y2="95" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="590" y1="95" x2="620" y2="95" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#b)"/>
+  <path d="M675,130 C675,180 70,180 70,132" fill="none" stroke="#8b90a0" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#b)"/>
+  <text x="370" y="190" fill="#8b90a0" font-size="11" text-anchor="middle">sysret / iret: with PCID the TLB entries of both sides survive the round trip</text>
+  <text x="370" y="35" fill="#e1e4ed" font-size="12" text-anchor="middle">Two CR3 writes per kernel entry, each roughly a hundred cycles</text>
+</svg>
+</div>
+
+<h3>Why PCID matters so much</h3>
+<p>On x86 a CR3 write normally flushes all non-global TLB entries. Without help, every syscall would wipe the TLB. Classic kernels avoided this by marking kernel pages <em>global</em>, but under PTI most kernel pages can no longer be global, because a global entry would remain usable after switching to the user tables. Process Context Identifiers (PCIDs) tag TLB entries with a 12-bit ID, so setting the no-flush bit on a CR3 write keeps entries cached. Linux gives each address space a kernel PCID and a paired user PCID, so kernel and user translations coexist in the TLB. The patch posting described PCIDs making syscalls "roughly 2x faster" than without them under KAISER (<a href="https://lwn.net/Articles/738534/">KAISER v2 on LWN</a>), building on Andy Lutomirski's PCID work merged for 4.14. Remaining wrinkles from the docs: user-PCID flushes are deferred until exit to userspace, and CPUs with PCID but no <code>INVPCID</code> must defer kernel-address flushes to the next use of every PCID.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">PTI without PCID</h4>
+    <ul>
+      <li>Every CR3 write flushes the TLB</li>
+      <li>Each syscall, interrupt or exception starts cold</li>
+      <li>Large working sets pay repeated page walks</li>
+      <li>Worst-case microbenchmarks over 800% slower</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">PTI with PCID</h4>
+    <ul>
+      <li>CR3 write with no-flush bit keeps TLB entries</li>
+      <li>Kernel and user PCIDs coexist per address space</li>
+      <li>Cost dominated by CR3 cycles, not misses</li>
+      <li>Netflix-style 50k syscalls/s: about 1.1% overhead</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout"><strong>Residual surface.</strong> The x86 architecture still forces some kernel state into the user tables (entry text, IDT, TSS). The Meltdown authors warn that while this contains no secrets, leaking even one pointer can defeat KASLR (<a href="https://www.usenix.org/system/files/conference/usenixsecurity18/sec18-lipp.pdf">Lipp et al.</a>). That is why <code>cpu_entry_area</code> is kept as small as possible.</div>
+
+<h3>What it costs</h3>
+<p>Brendan Gregg's analysis found overheads ranging from about 1% to over 800% depending on syscall rate, context switches, page faults, working-set size and cache behaviour; at 50k syscalls per second per CPU, overhead was around 2%, and PCID plus huge pages could reduce it further or even produce a net gain on his benchmark (<a href="https://www.brendangregg.com/blog/2018-02-09/kpti-kaiser-meltdown-performance.html">Gregg, 2018</a>; <a href="https://www.usenix.org/system/files/login/articles/login_winter18_03_gruss.pdf">Gruss et al., ;login: 2018</a>). Memory costs are modest: 4 KiB extra per process for the order-1 PGD and about 2 MB for the aligned <code>cpu_entry_area</code> (<a href="https://docs.kernel.org/arch/x86/pti.html">PTI docs</a>).</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Meltdown mitigation</div><div class="desc">On affected Intel CPUs, <code>/sys/devices/system/cpu/vulnerabilities/meltdown</code> reports <code>Mitigation: PTI</code>; Windows and macOS shipped KAISER-style equivalents (<a href="https://www.usenix.org/system/files/conference/usenixsecurity18/sec18-lipp.pdf">Lipp et al.</a>).</div></div>
+  <div class="use-case"><div class="label">Cloud fleets</div><div class="desc">Operators measured syscall rates per service, moved to PCID-capable kernels, and adopted huge pages to keep overhead low (<a href="https://www.brendangregg.com/blog/2018-02-09/kpti-kaiser-meltdown-performance.html">Gregg</a>).</div></div>
+  <div class="use-case"><div class="label">Trusted workloads</div><div class="desc">On unaffected CPUs or fully trusted single-tenant boxes, <code>nopti</code> or <code>pti=off</code> disables it at boot (<a href="https://docs.kernel.org/arch/x86/pti.html">PTI docs</a>; <a href="https://lwn.net/Articles/744246/">LWN</a>).</div></div>
+  <div class="use-case"><div class="label">KASLR hardening</div><div class="desc">Its original purpose: hiding the kernel layout from timing and prefetch side channels, still relevant where the CPU is not vulnerable to Meltdown (<a href="https://gruss.cc/files/kaiser.pdf">KAISER</a>).</div></div>
+</div>
+<p>Newer CPUs that report immunity to rogue data cache load are not flagged as Meltdown-affected, and the kernel leaves PTI off on them by default, which is why most current AMD and recent Intel systems run without it (<a href="https://en.wikipedia.org/wiki/Kernel_page-table_isolation">overview</a>).</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li><a href="https://docs.kernel.org/arch/x86/pti.html">Linux kernel documentation: Page Table Isolation (PTI)</a></li>
+  <li><a href="https://gruss.cc/files/kaiser.pdf">Gruss et al., "KASLR is Dead: Long Live KASLR" (KAISER), ESSoS 2017</a></li>
+  <li><a href="https://www.usenix.org/system/files/conference/usenixsecurity18/sec18-lipp.pdf">Lipp et al., "Meltdown: Reading Kernel Memory from User Space", USENIX Security 2018</a></li>
+  <li><a href="https://lwn.net/Articles/738534/">Dave Hansen, "[v2] KAISER: unmap most of the kernel from userspace page tables", LWN</a></li>
+  <li><a href="https://lwn.net/Articles/741878/">Jonathan Corbet, "The current state of kernel page-table isolation", LWN, Dec 2017</a></li>
+  <li><a href="https://lwn.net/Articles/744246/">LWN discussion on per-process PTI and nopti</a></li>
+  <li><a href="https://www.brendangregg.com/blog/2018-02-09/kpti-kaiser-meltdown-performance.html">Brendan Gregg, "KPTI/KAISER Meltdown Initial Performance Regressions", 2018</a></li>
+  <li><a href="https://www.usenix.org/system/files/login/articles/login_winter18_03_gruss.pdf">Gruss et al., "Kernel Isolation: From an Academic Idea to an Efficient Patch for Every Computer", ;login: Winter 2018</a></li>
+  <li><a href="https://elixir.bootlin.com/linux/latest/source/arch/x86/entry/calling.h">Linux source: arch/x86/entry/calling.h (CR3 switch macros)</a></li>
+  <li><a href="https://en.wikipedia.org/wiki/Kernel_page-table_isolation">Wikipedia: Kernel page-table isolation</a></li>
+</ol>
+</div>
+</body>
+</html>

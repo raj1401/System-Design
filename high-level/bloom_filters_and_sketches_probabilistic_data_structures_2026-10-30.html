@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bloom Filters and Sketches: Probabilistic Data Structures at Scale</title>
+<meta name="description" content="How Bloom filters, HyperLogLog, and Count-Min sketches trade a small, bounded error for huge memory savings in membership tests, distinct counts, and frequency estimates.">
+<style> block into the document's <head> EXACTLY as written, character for
+character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Bloom Filters and Sketches: Probabilistic Data Structures at Scale</h1>
+<p class="subtitle">Trading a little certainty for a lot of memory: membership, cardinality, and frequency in kilobytes.</p>
+<p class="meta">October 30, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>Some questions get very expensive to answer exactly once the data is huge. Is this key in this file? How many unique users visited today? Which URLs are hot right now? An exact answer needs memory that grows with the data. <strong>Probabilistic data structures</strong> answer the same questions in fixed or tiny space, and accept a small, mathematically bounded error in exchange.</p>
+<p>Three of them show up all over production systems. A <strong>Bloom filter</strong> answers set membership with no false negatives and a tunable false-positive rate (<a href="https://dl.acm.org/doi/10.1145/362686.362692">Bloom, 1970</a>). <strong>HyperLogLog</strong> estimates the number of distinct elements using a few kilobytes (<a href="https://redisgate.com/download/FlFuGaMe07.pdf">Flajolet et al., 2007</a>). The <strong>Count-Min sketch</strong> estimates how often each item appears in a stream (<a href="https://www.cs.helsinki.fi/u/jilu/paper/countMin.pdf">Cormode &amp; Muthukrishnan, 2005</a>).</p>
+
+<div class="callout"><strong>The design rule:</strong> use a sketch as a cheap first check in front of an expensive exact one, or wherever an answer that is off by about 1% is just as useful as a perfect one. Bloom's original paper framed it exactly this way: a small in-memory hash area plus a slower secondary test to catch the rare errors (<a href="https://dl.acm.org/doi/10.1145/362686.362692">Bloom, 1970</a>).</div>
+
+<h2>Bloom filters: definitely not, or probably yes</h2>
+<p>A Bloom filter is a bit array of <code>m</code> bits and <code>k</code> hash functions. To insert a key, hash it <code>k</code> times and set those bits to 1. To look it up, check the same <code>k</code> bits. If any bit is 0, the key was <em>definitely never inserted</em>. If all of them are 1, it <em>probably</em> was, because other keys may have set those bits. Cassandra's docs describe the two outcomes the same way: the data definitely does not exist in the file, or it probably does (<a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/bloom_filters.html">Apache Cassandra docs</a>).</p>
+
+<div class="diagram-container">
+<h4>Bloom filter insert and lookup (k = 3)</h4>
+<svg width="740" height="250" viewBox="0 0 740 250" font-family="Inter,sans-serif">
+  <rect x="20" y="20" width="110" height="34" rx="6" fill="#232733" stroke="#4ecdc4"/>
+  <text x="75" y="42" fill="#e1e4ed" font-size="13" text-anchor="middle">insert "alice"</text>
+  <rect x="20" y="196" width="110" height="34" rx="6" fill="#232733" stroke="#ff6b9d"/>
+  <text x="75" y="218" fill="#e1e4ed" font-size="13" text-anchor="middle">lookup "zed"</text>
+  <g>
+    <!-- 16 bits -->
+    <g id="bits">
+    </g>
+  </g>
+  <rect x="170" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="184" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="200" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="214" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="230" y="108" width="28" height="34" fill="#4ecdc4" fill-opacity="0.35" stroke="#2e3345"/><text x="244" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><rect x="260" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="274" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="290" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="304" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="320" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="334" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="350" y="108" width="28" height="34" fill="#6c8cff" fill-opacity="0.35" stroke="#2e3345"/><text x="364" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><rect x="380" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="394" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="410" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="424" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="440" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="454" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="470" y="108" width="28" height="34" fill="#6c8cff" fill-opacity="0.35" stroke="#2e3345"/><text x="484" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><rect x="500" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="514" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="530" y="108" width="28" height="34" fill="#4ecdc4" fill-opacity="0.35" stroke="#2e3345"/><text x="544" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><rect x="560" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="574" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="590" y="108" width="28" height="34" fill="#1a1d27" fill-opacity="1" stroke="#2e3345"/><text x="604" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><rect x="620" y="108" width="28" height="34" fill="#6c8cff" fill-opacity="0.35" stroke="#2e3345"/><text x="634" y="130" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text>
+  <line x1="130" y1="37" x2="364" y2="108" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="130" y1="37" x2="484" y2="108" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="130" y1="37" x2="634" y2="108" stroke="#4ecdc4" stroke-width="1.5"/>
+  <line x1="130" y1="213" x2="394" y2="142" stroke="#ff6b9d" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="130" y1="213" x2="484" y2="142" stroke="#ff6b9d" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="130" y1="213" x2="574" y2="142" stroke="#ff6b9d" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="560" y="205" fill="#ff6b9d" font-size="12">one probed bit is 0</text>
+  <text x="560" y="222" fill="#ff6b9d" font-size="12">so "zed" is definitely absent</text>
+  <text x="560" y="40" fill="#4ecdc4" font-size="12">h1, h2, h3 set 3 bits</text>
+  <text x="370" y="180" fill="#8b90a0" font-size="11" text-anchor="middle">m-bit array (shared by every key)</text>
+</svg>
+</div>
+
+<h3>Sizing the filter</h3>
+<p>With <code>n</code> keys, the false-positive rate is roughly <code>(1 - e^(-kn/m))^k</code>. It is lowest when <code>k = (m/n) &middot; ln 2</code>, which gives <code>m/n = -ln(p) / (ln 2)^2</code> bits per key for a target rate <code>p</code>. That works out to about 9.6 bits and 7 hashes per key for 1%, and about 14.4 bits for 0.1% (<a href="https://pmcfadin.github.io/cqlite/sstable-format/ch07/">CQLite SSTable notes</a>). The striking part is that the size depends only on <code>p</code> and <code>n</code>, not on how big the keys are: a 200-byte URL costs the same 10 bits as an 8-byte integer.</p>
+<p>The returns diminish fast. RocksDB's wiki points out that 4.9 bits per key (10% false positives) already gets 90% of the benefit of 100 bits per key, and 9.9 bits (1%) gets 99% (<a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter">RocksDB wiki</a>). Cassandra notes that a 1% filter takes about three times the memory of a 10% one (<a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/bloom_filters.html">Cassandra docs</a>).</p>
+
+<h3>Limits and variants</h3>
+<p>You can't delete from a standard Bloom filter, because clearing a bit might erase other keys. Counting Bloom filters fix that with small counters, but typically use 3 to 4 times the space. A filter also degrades once you insert more than the <code>n</code> it was sized for, so rebuild it rather than letting it saturate. <strong>Cuckoo filters</strong> store short fingerprints in a cuckoo hash table, support deletes, and use less space than Bloom filters when the target false-positive rate is under about 3% (<a href="https://conferences2.sigcomm.org/co-next/2014/CoNEXT_papers/p75.pdf">Fan et al., CoNEXT 2014</a>). RocksDB also keeps all of a key's probes inside one CPU cache line, so each lookup costs at most one cache miss per filter (<a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter">RocksDB wiki</a>).</p>
+
+<h2>HyperLogLog: counting distinct things in 12 KB</h2>
+<p>Counting unique items exactly means remembering every item you've seen. HyperLogLog avoids that with a neat observation about hashing. If you hash items uniformly, a hash that starts with many leading zeros is rare: a run of <code>r</code> zeros shows up about once every <code>2^r</code> distinct values. So the longest run you've seen hints at how many distinct values went by.</p>
+<p>One observation like that is noisy. HLL splits the hash: the first bits pick one of <code>m</code> registers, and each register keeps the largest leading-zero position it has seen. The estimate combines the registers with a <em>harmonic mean</em>, which tames outliers, and the relative standard error comes out to about <code>1.04 / &radic;m</code> (<a href="https://redisgate.com/download/FlFuGaMe07.pdf">Flajolet et al., 2007</a>). Redis uses 16,384 registers, which gives 1.04 / 128, or a 0.81% standard error, in at most 12 KB per key (<a href="https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/">Redis HyperLogLog docs</a>).</p>
+
+<div class="diagram-container">
+<h4>HyperLogLog: bucket by prefix, keep max leading zeros</h4>
+<svg width="740" height="230" viewBox="0 0 740 230" font-family="Inter,sans-serif">
+  <rect x="20" y="30" width="120" height="36" rx="6" fill="#232733" stroke="#6c8cff"/>
+  <text x="80" y="53" fill="#e1e4ed" font-size="13" text-anchor="middle">user_id 8812</text>
+  <line x1="140" y1="48" x2="180" y2="48" stroke="#8b90a0" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="185" y="30" width="80" height="36" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="225" y="53" fill="#ffd93d" font-size="13" text-anchor="middle" font-family="monospace">0110</text>
+  <rect x="265" y="30" width="230" height="36" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="380" y="53" fill="#4ecdc4" font-size="13" text-anchor="middle" font-family="monospace">0001 0110 1011 ...</text>
+  <text x="225" y="88" fill="#ffd93d" font-size="11" text-anchor="middle">register index = 6</text>
+  <text x="380" y="88" fill="#4ecdc4" font-size="11" text-anchor="middle">first 1-bit at position 4</text>
+  <rect x="190" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="205" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">2</text><text x="205" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r0</text><rect x="222" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="237" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><text x="237" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r1</text><rect x="254" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="269" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">5</text><text x="269" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r2</text><rect x="286" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="301" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><text x="301" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r3</text><rect x="318" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="333" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">3</text><text x="333" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r4</text><rect x="350" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="365" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><text x="365" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r5</text><rect x="382" y="140" width="30" height="40" fill="#ff6b9d" fill-opacity="0.4" stroke="#2e3345"/><text x="397" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">4</text><text x="397" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r6</text><rect x="414" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="429" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">2</text><text x="429" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r7</text><rect x="446" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="461" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">1</text><text x="461" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r8</text><rect x="478" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="493" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">6</text><text x="493" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r9</text><rect x="510" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="525" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">0</text><text x="525" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r10</text><rect x="542" y="140" width="30" height="40" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="557" y="165" fill="#e1e4ed" font-size="13" text-anchor="middle">3</text><text x="557" y="195" fill="#8b90a0" font-size="9" text-anchor="middle">r11</text>
+  <line x1="225" y1="96" x2="355" y2="140" stroke="#ffd93d" stroke-dasharray="4 3"/>
+  <text x="370" y="215" fill="#8b90a0" font-size="11" text-anchor="middle">register 6 = max(old, 4); estimate = harmonic mean over all registers</text>
+</svg>
+</div>
+
+<p>HLL sketches have one more property that matters in distributed systems: they <strong>merge</strong>. Take the element-wise max of two sketches and you get the sketch of the union, so every shard or every hour can keep its own sketch and you combine them later. Redis's <code>PFCOUNT</code> does exactly that when you pass it several keys (<a href="https://redis.io/docs/latest/commands/PFCount/">Redis PFCOUNT</a>). Google's HyperLogLog++ added bias correction and a sparse encoding that improve accuracy and memory for small cardinalities (<a href="http://static.googleusercontent.com/media/research.google.com/en/us/pubs/archive/40671.pdf">Heule et al., EDBT 2013</a>).</p>
+
+<h2>Count-Min sketch: how often, approximately</h2>
+<p>A Count-Min sketch is a grid of counters with <code>d</code> rows and <code>w</code> columns, one hash function per row. To count an item, increment one counter in each row. To estimate its count, read those <code>d</code> counters and take the <em>minimum</em>. Collisions only ever add, so the estimate never undercounts. With <code>w = e/&epsilon;</code> and <code>d = ln(1/&delta;)</code>, the overcount is at most <code>&epsilon;</code> times the total stream size with probability at least <code>1 - &delta;</code>, and plain pairwise-independent hashes are enough (<a href="https://www.cs.helsinki.fi/u/jilu/paper/countMin.pdf">Cormode &amp; Muthukrishnan</a>).</p>
+
+<div class="diagram-container">
+<h4>Count-Min sketch (d = 3 rows): estimate = min of the row counters</h4>
+<svg width="740" height="200" viewBox="0 0 740 200" font-family="Inter,sans-serif">
+  <rect x="250" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="272" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">3</text><rect x="296" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="318" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">0</text><rect x="342" y="25" width="44" height="34" fill="#6c8cff" fill-opacity="0.4" stroke="#2e3345"/><text x="364" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">41</text><rect x="388" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="410" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">7</text><rect x="434" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="456" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">2</text><rect x="480" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="502" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">9</text><rect x="526" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="548" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">1</text><rect x="572" y="25" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="594" y="47" fill="#e1e4ed" font-size="12" text-anchor="middle">4</text><line x1="130" y1="97" x2="342" y2="42" stroke="#ff6b9d" stroke-width="1.2" stroke-dasharray="4 3"/><text x="215" y="47" fill="#8b90a0" font-size="11">h1</text><rect x="250" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="272" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">5</text><rect x="296" y="75" width="44" height="34" fill="#6c8cff" fill-opacity="0.4" stroke="#2e3345"/><text x="318" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">37</text><rect x="342" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="364" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">2</text><rect x="388" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="410" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">0</text><rect x="434" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="456" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">8</text><rect x="480" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="502" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">1</text><rect x="526" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="548" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">6</text><rect x="572" y="75" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="594" y="97" fill="#e1e4ed" font-size="12" text-anchor="middle">3</text><line x1="130" y1="97" x2="296" y2="92" stroke="#ff6b9d" stroke-width="1.2" stroke-dasharray="4 3"/><text x="215" y="97" fill="#8b90a0" font-size="11">h2</text><rect x="250" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="272" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">1</text><rect x="296" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="318" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">4</text><rect x="342" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="364" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">9</text><rect x="388" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="410" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">2</text><rect x="434" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="456" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">6</text><rect x="480" y="125" width="44" height="34" fill="#6c8cff" fill-opacity="0.4" stroke="#2e3345"/><text x="502" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">52</text><rect x="526" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="548" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">0</text><rect x="572" y="125" width="44" height="34" fill="#232733" fill-opacity="1" stroke="#2e3345"/><text x="594" y="147" fill="#e1e4ed" font-size="12" text-anchor="middle">7</text><line x1="130" y1="97" x2="480" y2="142" stroke="#ff6b9d" stroke-width="1.2" stroke-dasharray="4 3"/><text x="215" y="147" fill="#8b90a0" font-size="11">h3</text>
+  <rect x="20" y="80" width="110" height="34" rx="6" fill="#232733" stroke="#ff6b9d"/>
+  <text x="75" y="102" fill="#e1e4ed" font-size="13" text-anchor="middle">"/checkout"</text>
+  <text x="640" y="45" fill="#8b90a0" font-size="12">row 1: 41</text>
+  <text x="640" y="95" fill="#8b90a0" font-size="12">row 2: 37</text>
+  <text x="640" y="145" fill="#8b90a0" font-size="12">row 3: 52</text>
+  <text x="640" y="180" fill="#ffd93d" font-size="13" font-weight="600">estimate = 37</text>
+</svg>
+</div>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Exact structures</h4>
+    <ul>
+      <li>Hash set or map, memory grows with every key</li>
+      <li>Zero error, deletes are easy</li>
+      <li>Hard to merge across shards cheaply</li>
+      <li>Right choice when answers feed money or correctness</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">Probabilistic sketches</h4>
+    <ul>
+      <li>Fixed or near-fixed memory set by the error target</li>
+      <li>Bounded, one-sided or statistical error</li>
+      <li>HLL and Count-Min merge cell by cell</li>
+      <li>Right choice for filtering, analytics, and monitoring</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">LSM storage engines</div><div class="desc">RocksDB and Cassandra keep a Bloom filter per SSTable so a point read skips files that cannot hold the key, saving disk I/O (<a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter">RocksDB</a>, <a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/bloom_filters.html">Cassandra</a>).</div></div>
+  <div class="use-case"><div class="label">Tunable per table</div><div class="desc">Cassandra defaults <code>bloom_filter_fp_chance</code> to 0.01, or 0.1 with leveled compaction, and lets operators trade RAM for I/O per table (<a href="https://docs.datastax.com/en/cassandra-oss/3.x/cassandra/operations/opsTuningBloomFilters.html">DataStax</a>).</div></div>
+  <div class="use-case"><div class="label">Unique visitors and queries</div><div class="desc">Call <code>PFADD</code> for every search query and <code>PFCOUNT</code> for the day's distinct count, in about 12 KB (<a href="https://redis.io/docs/latest/commands/PFCount/">Redis</a>).</div></div>
+  <div class="use-case"><div class="label">Database cardinality estimates</div><div class="desc">Google built HyperLogLog++ for production systems that need fast, mergeable distinct counts (<a href="http://static.googleusercontent.com/media/research.google.com/en/us/pubs/archive/40671.pdf">Heule et al.</a>).</div></div>
+  <div class="use-case"><div class="label">Heavy hitters</div><div class="desc">Count-Min tracks hot keys, top URLs, or abusive IPs in a stream, and supports frequent-item and quantile queries (<a href="https://www.cs.helsinki.fi/u/jilu/paper/countMin.pdf">Cormode &amp; Muthukrishnan</a>).</div></div>
+  <div class="use-case"><div class="label">Sets with deletes</div><div class="desc">Cuckoo filters suit caches and dedup sets where entries expire, keeping Bloom-like space while allowing removal (<a href="https://conferences2.sigcomm.org/co-next/2014/CoNEXT_papers/p75.pdf">Fan et al.</a>).</div></div>
+</div>
+
+<div class="callout"><strong>Pitfalls:</strong> size filters for the real final <code>n</code>, since an overfilled Bloom filter quietly drifts above its target rate; never let a "probably yes" skip the exact check when correctness matters; and use well-mixed hashes, because every error bound assumes uniform hashing.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>Burton H. Bloom, <a href="https://dl.acm.org/doi/10.1145/362686.362692">Space/Time Trade-offs in Hash Coding with Allowable Errors</a>, Communications of the ACM 13(7), 1970.</li>
+  <li>Flajolet, Fusy, Gandouet, Meunier, <a href="https://redisgate.com/download/FlFuGaMe07.pdf">HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm</a>, AofA 2007.</li>
+  <li>Heule, Nunkesser, Hall, <a href="http://static.googleusercontent.com/media/research.google.com/en/us/pubs/archive/40671.pdf">HyperLogLog in Practice: Algorithmic Engineering of a State of the Art Cardinality Estimation Algorithm</a>, Google.</li>
+  <li>Cormode, Muthukrishnan, <a href="https://www.cs.helsinki.fi/u/jilu/paper/countMin.pdf">An Improved Data Stream Summary: The Count-Min Sketch and its Applications</a>, Journal of Algorithms.</li>
+  <li>Fan, Andersen, Kaminsky, Mitzenmacher, <a href="https://conferences2.sigcomm.org/co-next/2014/CoNEXT_papers/p75.pdf">Cuckoo Filter: Practically Better Than Bloom</a>, CoNEXT 2014.</li>
+  <li><a href="https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter">RocksDB Bloom Filter</a>, facebook/rocksdb wiki.</li>
+  <li><a href="https://cassandra.apache.org/doc/stable/cassandra/managing/operating/bloom_filters.html">Bloom Filters</a>, Apache Cassandra documentation.</li>
+  <li><a href="https://docs.datastax.com/en/cassandra-oss/3.x/cassandra/operations/opsTuningBloomFilters.html">Tuning Bloom filters</a>, DataStax Cassandra docs.</li>
+  <li><a href="https://pmcfadin.github.io/cqlite/sstable-format/ch07/">Filter.db (Bloom) sizing formulas</a>, CQLite SSTable format notes.</li>
+  <li><a href="https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/">HyperLogLog</a> and <a href="https://redis.io/docs/latest/commands/PFCount/">PFCOUNT</a>, Redis documentation.</li>
+</ol>
+</div>
+</body>
+</html>

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tail Latency at Scale: Hedged Requests, Tied Requests, and Fan-out</title>
+<meta name="description" content="How fan-out turns rare slow servers into slow user requests, and how hedged and tied requests race replicas to cut tail latency with little extra load.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Tail Latency at Scale: Hedged Requests, Tied Requests, and Fan-out</h1>
+<p class="subtitle">Why a healthy p99 on every server still gives you a slow service, and how racing replicas tames the tail.</p>
+<p class="meta">November 2, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>Average latency is a comforting number that hides the requests users actually remember. In large services a single user request usually fans out to dozens or thousands of backend calls, and the response is only as fast as the slowest one. Dean and Barroso's <a href="https://cacm.acm.org/research/the-tail-at-scale/">The Tail at Scale</a> showed that rare per-server hiccups become the common case at the service level, and argued that we should build systems that are <em>tail-tolerant</em>: they keep answering fast even when some components are slow, much as fault-tolerant systems keep working when some components fail.</p>
+<p>The workhorse techniques are <strong>hedged requests</strong> (send a backup copy to another replica if the first is slow, take whichever answers first) and <strong>tied requests</strong> (enqueue on two replicas and let them cancel each other once one starts work). Both are now available off the shelf in <a href="https://grpc.io/docs/guides/request-hedging/">gRPC</a>, <a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_routing.html">Envoy</a> and database drivers such as the <a href="https://apache.googlesource.com/cassandra-java-driver/+/HEAD/manual/core/speculative_execution/">Cassandra Java driver</a>.</p>
+
+<h2>Why fan-out amplifies the tail</h2>
+<p>Suppose each leaf server normally answers in 10&nbsp;ms but its 99th-percentile latency is one second. If a request touches one server, 1 in 100 requests is slow. If it must gather answers from 100 servers in parallel, the request is fast only if <em>every</em> leaf is fast, so the slow fraction becomes <code>1 - 0.99^100</code>, about 63%. The paper also notes that with just 1 in 10,000 slow responses per server, a 2,000-server fan-out sees almost one in five user requests take over a second (<a href="https://barroso.org/publications/TheTailAtScale.pdf">Dean &amp; Barroso, 2013</a>).</p>
+<p>Real measurements tell the same story. In a Google service from the paper, a single random leaf's p99 was 10&nbsp;ms, but the p99 for <em>all</em> leaves to finish was 140&nbsp;ms, and waiting for just 95% of them took 70&nbsp;ms. The slowest 5% of leaves were responsible for half of the total p99 latency.</p>
+
+<div class="diagram-container">
+<h4>Fan-out: the root waits for the slowest leaf</h4>
+<svg width="720" height="300" viewBox="0 0 720 300" font-family="Inter,sans-serif">
+  <rect x="300" y="20" width="120" height="44" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="360" y="47" text-anchor="middle" fill="#e1e4ed" font-size="14">Root</text>
+  <g stroke="#8b90a0" stroke-width="1.5">
+    <line x1="360" y1="64" x2="80" y2="170"/><line x1="360" y1="64" x2="220" y2="170"/>
+    <line x1="360" y1="64" x2="360" y2="170"/><line x1="360" y1="64" x2="500" y2="170"/>
+    <line x1="360" y1="64" x2="640" y2="170" stroke="#ff6b9d" stroke-width="2.5"/>
+  </g>
+  <g font-size="12" text-anchor="middle">
+    <rect x="30" y="170" width="100" height="40" rx="6" fill="#1a1d27" stroke="#4ecdc4"/><text x="80" y="195" fill="#e1e4ed">Leaf 1 · 8 ms</text>
+    <rect x="170" y="170" width="100" height="40" rx="6" fill="#1a1d27" stroke="#4ecdc4"/><text x="220" y="195" fill="#e1e4ed">Leaf 2 · 11 ms</text>
+    <rect x="310" y="170" width="100" height="40" rx="6" fill="#1a1d27" stroke="#4ecdc4"/><text x="360" y="195" fill="#e1e4ed">Leaf 3 · 9 ms</text>
+    <rect x="450" y="170" width="100" height="40" rx="6" fill="#1a1d27" stroke="#4ecdc4"/><text x="500" y="195" fill="#e1e4ed">… 96 more</text>
+    <rect x="590" y="170" width="100" height="40" rx="6" fill="#1a1d27" stroke="#ff6b9d"/><text x="640" y="195" fill="#ff6b9d">Leaf 100 · 1 s</text>
+  </g>
+  <text x="360" y="250" text-anchor="middle" fill="#ffd93d" font-size="13">User latency = max(leaf latencies) ≈ 1 s</text>
+  <text x="360" y="275" text-anchor="middle" fill="#8b90a0" font-size="12">P(slow) = 1 − (1 − 0.01)^100 ≈ 63%</text>
+</svg>
+</div>
+
+<h2>Deeper dive: where variability comes from</h2>
+<p>Most slow responses are not caused by the request itself. The paper lists shared resources and noisy neighbours, background daemons, garbage collection, compaction and other maintenance work, queueing at many layers, power and thermal throttling, and hardware variation. Because the cause is usually <em>interference on a particular machine at a particular moment</em>, the same request sent to another replica is very likely to be fast. That observation is what makes the techniques below work.</p>
+<p>Within-request techniques act in milliseconds; across-request techniques such as micro-partitioning, selective replication of hot data and putting slow machines on probation act over seconds to minutes. This article focuses on the within-request kind.</p>
+
+<h3>Hedged requests</h3>
+<p>The client sends the request to the replica it thinks is best, and if no answer has arrived after a short delay it sends a second copy to another replica. Whichever reply comes first wins, and the client cancels the rest. Sending the backup immediately would double load, so the paper recommends waiting until the first request has been outstanding longer than the 95th-percentile expected latency for that request class. That caps extra load at roughly 5% while cutting the tail sharply. In a Google benchmark reading 1,000 keys from a BigTable spread over 100 servers, hedging after 10&nbsp;ms cut 99.9th-percentile latency from 1,800&nbsp;ms to 74&nbsp;ms while sending only 2% more requests (<a href="https://cacm.acm.org/research/the-tail-at-scale/">CACM</a>).</p>
+
+<div class="diagram-container">
+<h4>Hedged request timeline</h4>
+<svg width="720" height="220" viewBox="0 0 720 220" font-family="Inter,sans-serif">
+  <line x1="60" y1="190" x2="680" y2="190" stroke="#8b90a0"/>
+  <text x="60" y="210" fill="#8b90a0" font-size="11">t0</text>
+  <text x="250" y="210" fill="#8b90a0" font-size="11" text-anchor="middle">p95 delay</text>
+  <line x1="250" y1="30" x2="250" y2="190" stroke="#ffd93d" stroke-dasharray="4 4"/>
+  <text x="20" y="64" fill="#e1e4ed" font-size="12">A</text>
+  <rect x="60" y="50" width="560" height="22" rx="4" fill="#ff6b9d33" stroke="#ff6b9d"/>
+  <text x="340" y="66" fill="#ff6b9d" font-size="12" text-anchor="middle">Replica A stuck (GC pause) → cancelled</text>
+  <text x="20" y="124" fill="#e1e4ed" font-size="12">B</text>
+  <rect x="250" y="110" width="110" height="22" rx="4" fill="#4ecdc433" stroke="#4ecdc4"/>
+  <text x="305" y="126" fill="#4ecdc4" font-size="12" text-anchor="middle">hedge</text>
+  <line x1="360" y1="121" x2="360" y2="160" stroke="#4ecdc4"/>
+  <circle cx="360" cy="165" r="5" fill="#4ecdc4"/>
+  <text x="372" y="169" fill="#e1e4ed" font-size="12">first reply wins, return to caller</text>
+</svg>
+</div>
+
+<h3>Tied requests</h3>
+<p>Hedging still has a window where two servers both do the work, and waiting for p95 means only a small fraction of requests benefit. Much of the variability is <em>queueing before execution starts</em>, and once a request is running its completion time is far more predictable. Building on Mitzenmacher's result that letting a client pick the shorter of two queues exponentially improves load balancing over random choice (<a href="https://eecs.harvard.edu/~michaelm/postscripts/tpds2001.pdf">Mitzenmacher, 2001</a>), Dean and Barroso propose enqueuing the request on two servers at once, each copy tagged with the other server's identity. When one copy starts executing, it sends a cancellation to its twin, which is dropped or deprioritised if still queued.</p>
+<p>Both servers may start in the brief window while cancellations cross in flight, typically when both queues are empty, so the client adds a small delay of about two network message delays (1&nbsp;ms or less in a modern datacenter) before sending the second copy. Google's distributed file system implementation, reading uncached data from disk with replication factor 3, kept latency nearly identical to an idle cluster even while a large sort job ran concurrently.</p>
+
+<div class="diagram-container">
+<h4>Tied requests: whoever starts first cancels the twin</h4>
+<svg width="720" height="230" viewBox="0 0 720 230" font-family="Inter,sans-serif">
+  <rect x="40" y="90" width="110" height="44" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="95" y="117" text-anchor="middle" fill="#e1e4ed" font-size="13">Client</text>
+  <rect x="330" y="20" width="180" height="60" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="420" y="45" text-anchor="middle" fill="#e1e4ed" font-size="13">Server 1 queue</text>
+  <text x="420" y="65" text-anchor="middle" fill="#4ecdc4" font-size="11">req (tied to S2) starts ▶</text>
+  <rect x="330" y="150" width="180" height="60" rx="8" fill="#1a1d27" stroke="#8b90a0"/>
+  <text x="420" y="175" text-anchor="middle" fill="#e1e4ed" font-size="13">Server 2 queue</text>
+  <text x="420" y="195" text-anchor="middle" fill="#8b90a0" font-size="11">req (tied to S1) queued</text>
+  <line x1="150" y1="105" x2="330" y2="50" stroke="#6c8cff" stroke-width="1.5"/>
+  <text x="220" y="65" fill="#8b90a0" font-size="11">send at t0</text>
+  <line x1="150" y1="120" x2="330" y2="180" stroke="#6c8cff" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="185" y="175" fill="#8b90a0" font-size="11">send at t0 + ~2 net delays</text>
+  <path d="M520 60 C 600 90, 600 140, 520 175" fill="none" stroke="#ff6b9d" stroke-width="2"/>
+  <text x="610" y="120" fill="#ff6b9d" font-size="12">cancel</text>
+</svg>
+</div>
+
+<div class="callout"><strong>Only hedge what is safe to repeat.</strong> A hedged write can be applied twice. gRPC's design doc warns hedging should be enabled only for methods that are safe to execute multiple times (<a href="https://github.com/grpc/proposal/blob/master/A6-client-retries.md">gRFC A6</a>), and the Cassandra driver never speculates on a query not marked idempotent. Pair hedging with idempotency keys if you must hedge writes, and remember that hedging only helps when slowness is uncorrelated across replicas: if every replica is overloaded, extra copies make things worse.</div>
+
+<h2>Hedging versus retries</h2>
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Retry</h4>
+    <ul>
+      <li>Fires after an error or timeout</li>
+      <li>Original attempt is abandoned</li>
+      <li>Protects against failures</li>
+      <li>Usually with exponential backoff</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Hedge</h4>
+    <ul>
+      <li>Fires after a latency threshold</li>
+      <li>Original keeps running; first reply wins</li>
+      <li>Protects against slowness</li>
+      <li>Needs cancellation and a load budget</li>
+    </ul>
+  </div>
+</div>
+
+<h3>How production systems expose it</h3>
+<p><strong>gRPC</strong> configures a per-method <code>hedgingPolicy</code> with <code>maxAttempts</code> (clamped to 5 by default), <code>hedgingDelay</code> and <code>nonFatalStatusCodes</code>. The first RPC goes out immediately, another after each delay, and a non-fatal error fires the next hedge at once; the call deadline covers the whole chain, and server pushback stops further hedges (<a href="https://grpc.io/docs/guides/request-hedging/">gRPC docs</a>). <strong>Envoy</strong> sets <code>hedge_on_per_try_timeout</code> so that hitting the per-try timeout issues a retry without resetting the original, racing both upstreams; it requires a retry policy with a retry limit (<a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto">Envoy route API</a>). The <strong>Cassandra Java driver</strong>'s speculative execution policy is off by default; the constant policy launches up to <code>max-executions</code> attempts spaced by a fixed <code>delay</code>, and since Cassandra cannot cancel in-flight requests, “cancel” just means discarding late responses.</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Web search</div><div class="desc">Queries fan out to thousands of index shards; hedging and tied requests keep the root's tail close to a single leaf's.</div></div>
+  <div class="use-case"><div class="label">Distributed storage</div><div class="desc">BigTable reads and Google's cluster file system use hedged and tied reads to dodge disks busy with compaction or batch jobs.</div></div>
+  <div class="use-case"><div class="label">Service meshes</div><div class="desc">Envoy-based meshes hedge idempotent HTTP calls on per-try timeout without changing application code.</div></div>
+  <div class="use-case"><div class="label">NoSQL clients</div><div class="desc">Cassandra drivers speculatively query another replica when a node stalls on a long GC pause.</div></div>
+</div>
+
+<h2>Design checklist</h2>
+<p>Measure per-request-class latency percentiles and set the hedge delay near p95, not a fixed guess. Cap attempts and track the extra-load ratio as a first-class metric. Make cancellation real end to end, and tag hedges as lower priority where the server supports it. Restrict hedging to idempotent operations, and back it with circuit breakers and load shedding so that a cluster-wide slowdown does not turn hedges into a self-inflicted surge.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>Jeffrey Dean and Luiz André Barroso, <a href="https://cacm.acm.org/research/the-tail-at-scale/">The Tail at Scale</a>, Communications of the ACM 56(2), February 2013 (<a href="https://barroso.org/publications/TheTailAtScale.pdf">PDF</a>, <a href="https://doi.org/10.1145/2408776.2408794">DOI</a>).</li>
+  <li>Michael Mitzenmacher, <a href="https://eecs.harvard.edu/~michaelm/postscripts/tpds2001.pdf">The Power of Two Choices in Randomized Load Balancing</a>, IEEE TPDS 12(10), 2001 (<a href="https://doi.org/10.1109/71.963420">DOI</a>).</li>
+  <li>gRPC, <a href="https://grpc.io/docs/guides/request-hedging/">Request Hedging guide</a>.</li>
+  <li>gRPC proposal <a href="https://github.com/grpc/proposal/blob/master/A6-client-retries.md">A6: Client Retries (retry and hedging policies)</a>.</li>
+  <li>Envoy, <a href="https://www.envoyproxy.io/docs/envoy/latest/api-v3/config/route/v3/route_components.proto">HTTP route components: HedgePolicy</a> and <a href="https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/http/http_routing.html">HTTP routing: request hedging</a>.</li>
+  <li>Apache Cassandra Java Driver, <a href="https://apache.googlesource.com/cassandra-java-driver/+/HEAD/manual/core/speculative_execution/">Speculative query execution</a>.</li>
+  <li>Adrian Colyer, <a href="https://blog.acolyer.org/2015/01/15/the-tail-at-scale/">The Tail at Scale</a>, The Morning Paper, 2015.</li>
+</ol>
+</div>
+</body>
+</html>

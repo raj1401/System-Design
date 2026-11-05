@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Consistency Models: Linearizability, Sequential, Causal, and Eventual</title>
+<meta name="description" content="A practical map of single-object consistency models from linearizability down to eventual consistency, what each guarantees, and when to pick one.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Consistency Models: Linearizability, Sequential, Causal, and Eventual</h1>
+<p class="subtitle">What &ldquo;consistent&rdquo; actually means when replicas disagree, and which guarantee you are really buying.</p>
+<p class="meta">November 5, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>When two clients talk to a replicated store, they can disagree about what just happened. A <strong>consistency model</strong> is the contract that says which of those disagreements are legal. Formally it is a set of allowed <em>histories</em> of operations: if every execution your system can produce lands in that set, it satisfies the model (<a href="https://jepsen.io/consistency/models">Jepsen Consistency Models</a>).</p>
+<p>For single-object operations the hierarchy is well known: <strong>linearizability</strong> implies <strong>sequential consistency</strong>, which implies <strong>causal consistency</strong>, and weaker still is <strong>eventual consistency</strong> &mdash; a convergence promise rather than an ordering one. Stronger models give programmers a simpler mental model; weaker ones survive partitions and cross-region latency that stronger ones cannot (<a href="https://jepsen.io/consistency/models">Jepsen</a>; <a href="https://cacm.acm.org/practice/eventually-consistent/">Vogels, 2009</a>).</p>
+
+<div class="callout"><strong>Rule of thumb:</strong> pick the weakest model that still makes your invariants hold without heroic application logic. Linearizable locks and leader election need real-time order; a social feed usually does not. Paying for stronger consistency than you need costs availability and latency under partitions.</div>
+
+<h2>Linearizability: one instant, real time</h2>
+<p><a href="https://dl.acm.org/doi/10.1145/78969.78972">Herlihy &amp; Wing (1990)</a> defined linearizability so that each operation appears to take effect at a single point between its invocation and its response, and that point respects real-time order: if A finishes before B starts, A comes before B in the equivalent sequential history. Reads never return a value older than a write that already completed. Compare-and-swap and mutexes rely on this atomicity.</p>
+<p>Linearizability is <em>local</em> (composable per object) and non-blocking in theory: pending operations need not wait on others to complete for a legal linearization to exist. In an asynchronous network it cannot be totally available &mdash; under a partition some clients must stall (<a href="https://jepsen.io/consistency/models/linearizable">Jepsen: Linearizability</a>).</p>
+
+<div class="diagram-container">
+<h4>Linearizable vs. non-linearizable register</h4>
+<svg width="740" height="280" viewBox="0 0 740 280" font-family="Inter,sans-serif">
+  <text x="20" y="24" fill="#8b90a0" font-size="12">Client A</text>
+  <text x="20" y="54" fill="#8b90a0" font-size="12">Client B</text>
+  <text x="20" y="84" fill="#8b90a0" font-size="12">Client C</text>
+
+  <!-- A write(1) -->
+  <rect x="120" y="8" width="160" height="28" rx="6" fill="#6c8cff" fill-opacity="0.35" stroke="#6c8cff"/>
+  <text x="200" y="26" fill="#e1e4ed" font-size="12" text-anchor="middle">write(1)</text>
+  <!-- B write(2) after A -->
+  <rect x="320" y="38" width="160" height="28" rx="6" fill="#4ecdc4" fill-opacity="0.35" stroke="#4ecdc4"/>
+  <text x="400" y="56" fill="#e1e4ed" font-size="12" text-anchor="middle">write(2)</text>
+  <!-- C read after B completes -->
+  <rect x="520" y="68" width="120" height="28" rx="6" fill="#ffd93d" fill-opacity="0.3" stroke="#ffd93d"/>
+  <text x="580" y="86" fill="#e1e4ed" font-size="12" text-anchor="middle">read → ?</text>
+
+  <!-- timeline -->
+  <line x1="100" y1="120" x2="680" y2="120" stroke="#2e3345" stroke-width="2"/>
+  <text x="100" y="140" fill="#8b90a0" font-size="11">time →</text>
+
+  <!-- OK case -->
+  <rect x="40" y="160" width="300" height="90" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="190" y="182" fill="#4ecdc4" font-size="13" text-anchor="middle" font-weight="600">Linearizable</text>
+  <text x="190" y="204" fill="#e1e4ed" font-size="12" text-anchor="middle">C must read 2</text>
+  <text x="190" y="224" fill="#8b90a0" font-size="11" text-anchor="middle">B completed before C invoked</text>
+  <text x="190" y="240" fill="#8b90a0" font-size="11" text-anchor="middle">so write(2) is already in the past</text>
+
+  <!-- Bad case -->
+  <rect x="400" y="160" width="300" height="90" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="550" y="182" fill="#ff6b9d" font-size="13" text-anchor="middle" font-weight="600">Not linearizable</text>
+  <text x="550" y="204" fill="#e1e4ed" font-size="12" text-anchor="middle">C reading 1 is illegal</text>
+  <text x="550" y="224" fill="#8b90a0" font-size="11" text-anchor="middle">stale after a completed write</text>
+  <text x="550" y="240" fill="#8b90a0" font-size="11" text-anchor="middle">violates real-time order</text>
+</svg>
+</div>
+
+<h2>Sequential consistency: drop real time, keep a total order</h2>
+<p><a href="https://lamport.azurewebsites.net/pubs/multi.pdf">Lamport (1979)</a> required that the result of any execution match some sequential order of all operations, and that each process&rsquo;s operations appear in its program order. There is still one global order &mdash; everyone agrees on the sequence of writes &mdash; but that order need not respect wall-clock timing across processes. A write that finished on machine A can appear <em>after</em> a later write from machine B in the agreed sequence, as long as each client&rsquo;s own ops stay in order.</p>
+<p>That relaxation is why sequential consistency still cannot be totally available on asynchronous networks, yet it is strictly weaker (more permissive) than linearizability (<a href="https://jepsen.io/consistency/models">Jepsen</a>). Multiprocessors historically targeted sequential consistency; many distributed stores that advertise &ldquo;strong consistency&rdquo; without mentioning real time are closer to this model.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color: var(--accent);">Linearizability</h4>
+    <ul>
+      <li>Single total order of ops</li>
+      <li>Respects real-time precedence</li>
+      <li>No stale reads after a completed write</li>
+      <li>Composable across objects (locality)</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color: var(--accent2);">Sequential consistency</h4>
+    <ul>
+      <li>Single total order of ops</li>
+      <li>Only preserves per-process program order</li>
+      <li>Cross-client real-time stale reads allowed</li>
+      <li>Not local / not freely composable</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Causal consistency: order what actually depends</h2>
+<p>Often you do not need a total order of every write on the planet &mdash; only that causally related writes stay ordered. Using Lamport&rsquo;s happens-before idea: writes from the same client stay ordered; a write that a client has already observed is a cause of its later writes; and the relation is transitive. Concurrent (causally unrelated) writes may be applied in different orders at different replicas (<a href="https://xdn.cs.umass.edu/consistency-definitions/">XDN formal definitions</a>).</p>
+<p><a href="https://www.cs.princeton.edu/~wlloyd/papers/cops-sosp11.pdf">Lloyd et al., SOSP 2011 (COPS)</a> argued that <em>causal+</em> &mdash; causal consistency plus convergent conflict handling &mdash; is the strongest model that still allows always-on, low-latency geo-replication: local ops complete in the local datacenter, and cross-region replication preserves causal dependencies without waiting for a global lock. Social graphs, messaging, and collaborative apps fit this sweet spot: if Alice comments on Bob&rsquo;s post, no replica should show the comment before the post.</p>
+
+<div class="diagram-container">
+<h4>Causal order vs. concurrent writes</h4>
+<svg width="740" height="260" viewBox="0 0 740 260" font-family="Inter,sans-serif">
+  <!-- Alice -->
+  <rect x="40" y="40" width="140" height="50" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="110" y="60" fill="#6c8cff" font-size="12" text-anchor="middle">Alice</text>
+  <text x="110" y="78" fill="#e1e4ed" font-size="12" text-anchor="middle">W1: post photo</text>
+
+  <!-- Bob sees and comments -->
+  <rect x="300" y="40" width="160" height="50" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="380" y="60" fill="#4ecdc4" font-size="12" text-anchor="middle">Bob</text>
+  <text x="380" y="78" fill="#e1e4ed" font-size="12" text-anchor="middle">W2: comment on photo</text>
+
+  <line x1="180" y1="65" x2="300" y2="65" stroke="#ffd93d" stroke-width="2" marker-end="url(#arrow)"/>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#ffd93d"/>
+    </marker>
+  </defs>
+  <text x="240" y="55" fill="#ffd93d" font-size="11" text-anchor="middle">sees W1</text>
+
+  <!-- Carol concurrent -->
+  <rect x="300" y="130" width="160" height="50" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="380" y="150" fill="#ff6b9d" font-size="12" text-anchor="middle">Carol</text>
+  <text x="380" y="168" fill="#e1e4ed" font-size="12" text-anchor="middle">W3: unrelated post</text>
+
+  <!-- Replicas -->
+  <rect x="540" y="30" width="160" height="70" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="620" y="52" fill="#4ecdc4" font-size="12" text-anchor="middle">Replica East</text>
+  <text x="620" y="72" fill="#e1e4ed" font-size="11" text-anchor="middle">must apply W1 before W2</text>
+  <text x="620" y="88" fill="#8b90a0" font-size="11" text-anchor="middle">W3 may interleave freely</text>
+
+  <rect x="540" y="120" width="160" height="70" rx="8" fill="#1a1d27" stroke="#4ecdc4"/>
+  <text x="620" y="142" fill="#4ecdc4" font-size="12" text-anchor="middle">Replica West</text>
+  <text x="620" y="162" fill="#e1e4ed" font-size="11" text-anchor="middle">same: W1 ≺ W2</text>
+  <text x="620" y="178" fill="#8b90a0" font-size="11" text-anchor="middle">W3 order may differ</text>
+
+  <text x="370" y="230" fill="#8b90a0" font-size="12" text-anchor="middle">W1 → W2 is causal; W3 is concurrent with both</text>
+</svg>
+</div>
+
+<h2>Eventual consistency: converge, eventually</h2>
+<p><a href="https://cacm.acm.org/practice/eventually-consistent/">Vogels (2009)</a> popularized the operational definition: if no new updates are made to an object, eventually every access returns the last updated value. That is a liveness / convergence property. It says almost nothing about what a read may return while updates are still in flight &mdash; no monotonicity, no causal order, no recency. DNS is the classic example: TTLs and caches mean the world converges, but not on a schedule you control.</p>
+<p>Production systems usually bolt session guarantees on top &mdash; read-your-writes, monotonic reads, monotonic writes &mdash; so a single client does not see its own world rewind (<a href="https://cacm.acm.org/practice/eventually-consistent/">Vogels</a>). Conflict resolution (last-writer-wins, CRDTs, application merge) is what makes &ldquo;the same set of writes &rArr; the same state&rdquo; true everywhere. Without convergent conflict handling, replicas can permanently diverge even after updates stop.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color: var(--accent3);">Causal (+)</h4>
+    <ul>
+      <li>Preserves happens-before on writes</li>
+      <li>Available under partitions (sticky clients)</li>
+      <li>Low latency geo-local reads/writes</li>
+      <li>Needs dependency tracking / metadata</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color: var(--accent4);">Eventual</h4>
+    <ul>
+      <li>Only promises eventual convergence</li>
+      <li>Totally available; any replica can serve</li>
+      <li>Transient anomalies are application&rsquo;s problem</li>
+      <li>Cheap to implement; hard to reason about</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Choosing a level</h2>
+<p>Ask what breaks if a read is stale, reordered, or missing a causal dependency. Coordination services (etcd, ZooKeeper), leader leases, and inventory decrements usually need linearizability. A globally ordered feed can live with sequential consistency. Messaging and social graphs often land on causal+. CDN caches, analytics counters, and shopping-cart merges thrive on eventual consistency with explicit merge rules. Jepsen&rsquo;s hierarchy also reminds you that models stronger than sequential cannot be totally available on asynchronous networks &mdash; CAP is not optional once you pick your row in the chart (<a href="https://jepsen.io/consistency/models">Jepsen Consistency Models</a>).</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case">
+    <div class="label">etcd / ZooKeeper</div>
+    <div class="desc">Linearizable reads and writes for leader election, config, and fencing tokens &mdash; stale leadership is catastrophic.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Spanner / CockroachDB</div>
+    <div class="desc">External consistency / strict serializability via synchronized clocks or consensus so multi-key transactions look real-time ordered.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">COPS / geo KV stores</div>
+    <div class="desc">Causal+ across datacenters: local latency with causal dependency checks before exposing remote writes.</div>
+  </div>
+  <div class="use-case">
+    <div class="label">Dynamo / Cassandra / DNS</div>
+    <div class="desc">Eventual (or tunable) consistency: prefer availability and partition tolerance; resolve conflicts with quorums, LWW, or CRDTs.</div>
+  </div>
+</div>
+
+<div class="sources">
+<h2>Sources</h2>
+<ol>
+  <li>Maurice P. Herlihy and Jeannette M. Wing. <a href="https://dl.acm.org/doi/10.1145/78969.78972">Linearizability: A Correctness Condition for Concurrent Objects</a>. ACM TOPLAS 12(3), 1990. PDF: <a href="https://www.cs.cmu.edu/~wing/publications/HerlihyWing90.pdf">CMU copy</a>.</li>
+  <li>Leslie Lamport. <a href="https://lamport.azurewebsites.net/pubs/multi.pdf">How to Make a Multiprocessor Computer That Correctly Executes Multiprocess Programs</a>. IEEE Trans. Computers C-28(9), 1979.</li>
+  <li>Wyatt Lloyd, Michael J. Freedman, Michael Kaminsky, and David G. Andersen. <a href="https://www.cs.princeton.edu/~wlloyd/papers/cops-sosp11.pdf">Don&rsquo;t Settle for Eventual: Scalable Causal Consistency for Wide-Area Storage with COPS</a>. SOSP 2011.</li>
+  <li>Werner Vogels. <a href="https://cacm.acm.org/practice/eventually-consistent/">Eventually Consistent</a>. Communications of the ACM 52(1), 2009.</li>
+  <li>Kyle Kingsbury. <a href="https://jepsen.io/consistency/models">Jepsen Consistency Models</a> reference, including the single-object hierarchy and availability notes.</li>
+  <li><a href="https://jepsen.io/consistency/models/linearizable">Jepsen: Linearizability</a> &mdash; definition and availability implications.</li>
+  <li>XDN project. <a href="https://xdn.cs.umass.edu/consistency-definitions/">Formal definitions of linearizability, sequential, causal, and eventual consistency</a>.</li>
+  <li>Paolo Viotti and Marko Vukolić. <a href="https://vukolic.com/consistency-survey.pdf">Consistency in Non-Transactional Distributed Storage Systems</a>. ACM Computing Surveys, 2016.</li>
+</ol>
+</div>
+</body>
+</html>

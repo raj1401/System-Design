@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Two-phase commit (2PC) makes a transaction that spans several databases or shards commit everywhere or nowhere. Learn how prepare and commit phases work, why a coordinator crash can block participants, how 3PC and Paxos Commit address that, and how Spanner, Kafka, CockroachDB and XA use it.">
+<title>Two-Phase Commit: Atomic Commitment, Blocking, and Paxos Commit</title>
+<style> block into the document's <head> EXACTLY as written, character for
+character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Two-Phase Commit: Atomic Commitment, Blocking, and Paxos Commit</h1>
+<p class="subtitle">How a transaction that touches many machines commits everywhere or nowhere, and what happens when the coordinator dies mid-vote.</p>
+<p class="meta">November 8, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>When a single business operation writes to several independent stores (two database shards, a database plus a message broker, or two Paxos groups), you need <strong>atomic commitment</strong>: either every participant applies the change or none does. <strong>Two-phase commit (2PC)</strong> is the classic protocol for this. A coordinator (the <em>transaction manager</em>, TM) first asks every participant (each <em>resource manager</em>, RM) to <em>prepare</em>, meaning durably promise it can commit. Only if all vote yes does the coordinator record a commit decision and tell everyone to commit. Gray and Lamport note that 2PC is sometimes treated as synonymous with transaction commit itself (<a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2004/01/consensus-on-transaction-commit.pdf">Gray &amp; Lamport</a>).</p>
+<p>2PC is correct, but it is not fault-tolerant: if the coordinator crashes after participants have voted yes, they can be stuck holding locks until it recovers. Most of the modern story, from three-phase commit to Paxos Commit to Spanner, is about removing that single point of blocking.</p>
+
+<div class="callout"><strong>Not the same as a saga.</strong> A saga gives up atomic isolation and undoes work with compensating actions. 2PC keeps real ACID atomicity across participants, at the price of holding locks during the protocol and depending on the coordinator's availability.</div>
+
+<h2>How the protocol works</h2>
+<h3>Phase 1: prepare (voting)</h3>
+<p>After the application finishes its reads and writes, the coordinator sends <code>PREPARE</code> to each participant. A participant that can commit writes everything it needs (the redo data plus a <em>prepared</em> record) to stable storage, keeps its locks, and replies <code>YES</code>. Once it says yes it has given up the right to abort on its own: it must be able to commit even after a crash and restart. A participant that hits a constraint violation, deadlock, or failure replies <code>NO</code> and can abort immediately. PostgreSQL exposes exactly this state: after <code>PREPARE TRANSACTION</code> the transaction is detached from the session and "its state is fully stored on disk," so it can still be committed after a database crash (<a href="https://www.postgresql.org/docs/current/sql-prepare-transaction.html">PostgreSQL docs</a>).</p>
+<h3>Phase 2: commit or abort (decision)</h3>
+<p>If every vote is yes, the coordinator durably logs <code>COMMIT</code>. <strong>That log write is the commit point</strong>: the transaction is now committed, even if no participant knows yet. The coordinator then sends <code>COMMIT</code> to everyone, and participants apply the change, release locks, and acknowledge. If any vote is no, or a vote times out, the coordinator logs and sends <code>ABORT</code>. The decision must be re-sent until acknowledged, because a participant that crashed after preparing will ask on recovery.</p>
+
+<div class="diagram-container">
+<h4>Two-phase commit message flow (happy path)</h4>
+<svg width="720" height="370" viewBox="0 0 720 370" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="a1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6c8cff"/></marker>
+    <marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4ecdc4"/></marker>
+  </defs>
+  <rect x="40" y="10" width="140" height="36" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="110" y="33" fill="#e1e4ed" font-size="13" text-anchor="middle">Coordinator (TM)</text>
+  <rect x="290" y="10" width="140" height="36" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="360" y="33" fill="#e1e4ed" font-size="13" text-anchor="middle">Participant A</text>
+  <rect x="540" y="10" width="140" height="36" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="610" y="33" fill="#e1e4ed" font-size="13" text-anchor="middle">Participant B</text>
+  <line x1="110" y1="46" x2="110" y2="360" stroke="#8b90a0" stroke-dasharray="4 4"/>
+  <line x1="360" y1="46" x2="360" y2="360" stroke="#8b90a0" stroke-dasharray="4 4"/>
+  <line x1="610" y1="46" x2="610" y2="360" stroke="#8b90a0" stroke-dasharray="4 4"/>
+  <text x="20" y="80" fill="#ffd93d" font-size="11">PHASE 1</text>
+  <line x1="110" y1="85" x2="355" y2="100" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="110" y1="85" x2="605" y2="110" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="230" y="84" fill="#6c8cff" font-size="12">PREPARE</text>
+  <rect x="368" y="104" width="150" height="22" rx="4" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="443" y="119" fill="#ff6b9d" font-size="11" text-anchor="middle">force-log PREPARED</text>
+  <rect x="455" y="132" width="150" height="22" rx="4" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="530" y="147" fill="#ff6b9d" font-size="11" text-anchor="middle">force-log PREPARED</text>
+  <line x1="360" y1="160" x2="115" y2="178" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <line x1="610" y1="165" x2="115" y2="190" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="230" y="163" fill="#4ecdc4" font-size="12">YES</text>
+  <rect x="20" y="200" width="180" height="26" rx="4" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="110" y="218" fill="#ffd93d" font-size="11" text-anchor="middle">force-log COMMIT = commit point</text>
+  <text x="20" y="250" fill="#ffd93d" font-size="11">PHASE 2</text>
+  <line x1="110" y1="256" x2="355" y2="272" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <line x1="110" y1="256" x2="605" y2="282" stroke="#6c8cff" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="230" y="255" fill="#6c8cff" font-size="12">COMMIT</text>
+  <text x="372" y="300" fill="#8b90a0" font-size="11">apply, release locks</text>
+  <line x1="360" y1="315" x2="115" y2="332" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <line x1="610" y1="320" x2="115" y2="344" stroke="#4ecdc4" stroke-width="2" marker-end="url(#a2)"/>
+  <text x="230" y="318" fill="#4ecdc4" font-size="12">ACK</text>
+</svg>
+</div>
+
+<h2>The blocking problem</h2>
+<p>A participant that voted no, or never received <code>PREPARE</code>, can safely time out and abort. The dangerous window is after a participant votes yes. It is now <em>uncertain</em>: it cannot abort, because the coordinator may already have logged commit and told someone else, and it cannot commit, because another participant might have voted no. Gray and Lamport put it precisely: "if the TM fails right after every RM has sent a Prepared message, then the other RMs have no way of knowing whether the TM committed or aborted the transaction" (<a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2004/01/consensus-on-transaction-commit.pdf">Gray &amp; Lamport, section 3.3</a>). Until the coordinator returns, those participants keep their locks, and anything else that wants those rows waits too.</p>
+<p>You can see this operationally in PostgreSQL. Prepared transactions that outlive a crashed transaction manager sit in <code>pg_prepared_xacts</code> and in the <code>pg_twophase</code> directory, and the docs warn that although the prepared state is meant to be short, "external availability issues might mean transactions stay in this state for an extended interval" (<a href="https://www.postgresql.org/docs/current/two-phase.html">PostgreSQL two-phase transactions</a>).</p>
+
+<div class="diagram-container">
+<h4>Participant state machine and the uncertain window</h4>
+<svg width="700" height="220" viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="20" y="90" width="110" height="44" rx="22" fill="#232733" stroke="#6c8cff"/>
+  <text x="75" y="117" fill="#e1e4ed" font-size="13" text-anchor="middle">Working</text>
+  <rect x="250" y="70" width="170" height="84" rx="14" fill="#1a1d27" stroke="#ff6b9d" stroke-width="2" stroke-dasharray="6 3"/>
+  <text x="335" y="104" fill="#ff6b9d" font-size="13" text-anchor="middle">Prepared</text>
+  <text x="335" y="124" fill="#8b90a0" font-size="11" text-anchor="middle">uncertain: holds locks,</text>
+  <text x="335" y="139" fill="#8b90a0" font-size="11" text-anchor="middle">must wait for decision</text>
+  <rect x="540" y="30" width="130" height="44" rx="22" fill="#232733" stroke="#4ecdc4"/>
+  <text x="605" y="57" fill="#4ecdc4" font-size="13" text-anchor="middle">Committed</text>
+  <rect x="540" y="150" width="130" height="44" rx="22" fill="#232733" stroke="#ffd93d"/>
+  <text x="605" y="177" fill="#ffd93d" font-size="13" text-anchor="middle">Aborted</text>
+  <line x1="130" y1="112" x2="248" y2="112" stroke="#8b90a0" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="190" y="104" fill="#8b90a0" font-size="11" text-anchor="middle">vote YES</text>
+  <path d="M75,134 C75,200 400,200 538,176" fill="none" stroke="#8b90a0" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="200" y="196" fill="#8b90a0" font-size="11">vote NO or timeout: abort locally</text>
+  <line x1="420" y1="95" x2="538" y2="58" stroke="#8b90a0" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="470" y="66" fill="#8b90a0" font-size="11">COMMIT</text>
+  <line x1="420" y1="135" x2="538" y2="166" stroke="#8b90a0" stroke-width="2" marker-end="url(#a3)"/>
+  <text x="470" y="138" fill="#8b90a0" font-size="11">ABORT</text>
+</svg>
+</div>
+
+<h2>Fixing the blocking: 3PC and Paxos Commit</h2>
+<h3>Three-phase commit</h3>
+<p>Dale Skeen's 1981 paper <em>Nonblocking Commit Protocols</em> introduced three-phase commit (3PC), which inserts a <code>PRE-COMMIT</code> round between voting and committing so that no participant can be committed while another is still uncertain (<a href="https://primitives.pub/distributed-systems/monographs/three-phase-commit">3PC overview</a>). A surviving participant can then finish the protocol on its own. The catch is the failure model: 3PC assumes fail-stop crashes, no network partitions, and failure detectors that can tell slow from dead. Gray and Lamport point out that these protocols assume two processes can never both believe they are the coordinator, an assumption that "cannot be implemented in a purely asynchronous system" (<a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2004/01/consensus-on-transaction-commit.pdf">Gray &amp; Lamport</a>). That is why 3PC is rarely used in production.</p>
+<h3>Paxos Commit: replicate the decision</h3>
+<p>Gray and Lamport's answer is to treat each participant's vote as its own consensus problem. <strong>Paxos Commit</strong> uses 2F+1 coordinators (acceptors) and makes progress as long as F+1 of them are working. It has the same stable-storage write delay as 2PC, and in its faster variant the same message delay, at the cost of more messages. Their key observation is that classic 2PC is simply Paxos Commit with F = 0 (<a href="https://www.microsoft.com/en-us/research/publication/consensus-on-transaction-commit/">Microsoft Research</a>).</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Classic 2PC</h4>
+    <ul>
+      <li>Single coordinator, tolerates zero coordinator faults</li>
+      <li>Fewest messages, one forced log write per node</li>
+      <li>Blocks if the coordinator dies after YES votes</li>
+      <li>Standardised in X/Open XA</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">2PC over consensus</h4>
+    <ul>
+      <li>Coordinator and participants are replicated groups</li>
+      <li>A crash becomes a leader election, not a stall</li>
+      <li>More messages and replication latency per commit</li>
+      <li>Used by Spanner, CockroachDB, Kafka</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">Google Spanner</div><div class="desc">Transactions spanning several Paxos groups run 2PC between group leaders; transaction manager state is stored in the Paxos group, so a crashed coordinator leader is replaced rather than blocking (<a href="https://dl.acm.org/doi/pdf/10.1145/2491245">Spanner paper</a>, <a href="https://pdos.csail.mit.edu/6.824/papers/spanner-faq.txt">MIT 6.824 FAQ</a>).</div></div>
+  <div class="use-case"><div class="label">Apache Kafka</div><div class="desc">Exactly-once transactions: the transaction coordinator writes <code>PREPARE_COMMIT</code> to its replicated transaction log, then writes commit markers to every partition involved (<a href="https://cwiki.apache.org/confluence/spaces/KAFKA/pages/66854913/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging">KIP-98</a>).</div></div>
+  <div class="use-case"><div class="label">CockroachDB</div><div class="desc">Parallel Commits adds a <code>STAGING</code> transaction record listing in-flight writes, cutting commit latency from two rounds of consensus to one (<a href="https://www.cockroachlabs.com/blog/parallel-commits/">Cockroach Labs blog</a>, <a href="https://docs.cockroachlabs.com/docs/stable/architecture/transaction-layer">docs</a>).</div></div>
+  <div class="use-case"><div class="label">XA / PostgreSQL</div><div class="desc">Java EE and other transaction managers coordinate heterogeneous databases and queues through the XA interface; PostgreSQL provides the participant side with <code>PREPARE TRANSACTION</code> and <code>COMMIT PREPARED</code> (<a href="https://pubs.opengroup.org/onlinepubs/009680699/toc.pdf">XA spec</a>, <a href="https://www.postgresql.org/docs/current/two-phase.html">PostgreSQL</a>).</div></div>
+</div>
+
+<h2>Design takeaways</h2>
+<p><strong>Keep the prepared window short.</strong> Locks are held from prepare until the decision arrives, so every extra round trip adds contention. Spanner notes that most transactions touch only one Paxos group and can bypass the transaction manager entirely (<a href="https://dl.acm.org/doi/pdf/10.1145/2491245">Spanner paper</a>), which is a good reason to co-locate data that is written together.</p>
+<p><strong>Make the coordinator's log durable and replicated.</strong> Kafka's design shows the pattern: once the prepare record is durable, a new coordinator can reload it and re-drive the markers, so the client can be answered early (<a href="https://krivaltsevich.com/kafka-internals/14-transactions-eos.html">Kafka internals</a>).</p>
+<p><strong>Monitor orphaned prepared transactions.</strong> With a standalone XA manager, alert on old rows in <code>pg_prepared_xacts</code>, since an orphan holds locks and blocks vacuum cleanup.</p>
+<p><strong>Know when not to use it.</strong> Across service or organisational boundaries, where you cannot hold another team's locks, prefer the transactional outbox, idempotent consumers, or sagas.</p>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>J. Gray, L. Lamport. <a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2004/01/consensus-on-transaction-commit.pdf">Consensus on Transaction Commit</a>. ACM TODS 31(1), 2006 (MSR-TR-2003-96).</li>
+  <li>Microsoft Research. <a href="https://www.microsoft.com/en-us/research/publication/consensus-on-transaction-commit/">Consensus on Transaction Commit, publication page and Lamport's notes</a>.</li>
+  <li>D. Skeen. Nonblocking Commit Protocols. ACM SIGMOD 1981, as summarised in <a href="https://primitives.pub/distributed-systems/monographs/three-phase-commit">Three-Phase Commit (3PC)</a>.</li>
+  <li>J. C. Corbett et al. <a href="https://dl.acm.org/doi/pdf/10.1145/2491245">Spanner: Google's Globally Distributed Database</a>. ACM TOCS 2013.</li>
+  <li>MIT 6.824. <a href="https://pdos.csail.mit.edu/6.824/papers/spanner-faq.txt">Spanner FAQ</a>.</li>
+  <li>Apache Kafka. <a href="https://cwiki.apache.org/confluence/spaces/KAFKA/pages/66854913/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging">KIP-98: Exactly Once Delivery and Transactional Messaging</a>.</li>
+  <li><a href="https://krivaltsevich.com/kafka-internals/14-transactions-eos.html">Kafka Internals: Transactions and Exactly-Once</a>.</li>
+  <li>PostgreSQL. <a href="https://www.postgresql.org/docs/current/sql-prepare-transaction.html">PREPARE TRANSACTION</a> and <a href="https://www.postgresql.org/docs/current/two-phase.html">Two-Phase Transactions</a>.</li>
+  <li>The Open Group. <a href="https://pubs.opengroup.org/onlinepubs/009680699/toc.pdf">Distributed Transaction Processing: The XA Specification</a>.</li>
+  <li>Cockroach Labs. <a href="https://www.cockroachlabs.com/blog/parallel-commits/">Parallel Commits: An atomic commit protocol for globally distributed transactions</a>; <a href="https://docs.cockroachlabs.com/docs/stable/architecture/transaction-layer">Transaction Layer docs</a>.</li>
+</ol>
+</div>
+
+</body>
+</html>

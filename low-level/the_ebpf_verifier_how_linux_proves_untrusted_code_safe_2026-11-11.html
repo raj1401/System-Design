@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The eBPF Verifier: How Linux Proves Untrusted Code Safe</title>
+<meta name="description" content="How the Linux eBPF verifier statically proves untrusted kernel programs safe at load time: register types, range and tnum tracking, packet bounds, state pruning, loop limits, and Spectre hardening.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>The eBPF Verifier: How Linux Proves Untrusted Code Safe</h1>
+<p class="subtitle">Abstract interpretation, register types, tnums and state pruning, all inside the kernel at program load time.</p>
+<p class="meta">November 11, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>eBPF lets you load small programs into a running Linux kernel and attach them to sockets, tracepoints, XDP hooks, schedulers and more. That only works because every program must first pass the <strong>verifier</strong>, a static analyzer in <code>kernel/bpf/verifier.c</code> that runs at <code>bpf(BPF_PROG_LOAD)</code> time. It proves, before a single instruction executes, that the program terminates, never reads uninitialized registers or stack, only touches memory it is allowed to touch with in-bounds and aligned accesses, releases every reference it acquires, and calls helpers with correctly typed arguments. If it cannot prove all of that, the load fails with a verifier log instead of a kernel crash.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a></p>
+
+<div class="callout"><strong>Key idea:</strong> the verifier is not a sandbox at runtime. It is a symbolic executor that walks every feasible path once, at load time, so that the JIT-compiled program can then run at native speed with almost no runtime checks.</div>
+
+<h2>How it works</h2>
+<h3>Pass 1: control-flow sanity</h3>
+<p>The first pass builds the control-flow graph and rejects malformed programs: jumps out of range, unreachable instructions (<code>unreachable insn 1</code>) and, historically, any back-edge at all.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a> Since Linux 5.3, bounded loops are allowed, but only because pass 2 can prove they terminate.<a href="https://docs.ebpf.io/linux/concepts/loops/">[3]</a></p>
+
+<h3>Pass 2: symbolic execution over abstract register state</h3>
+<p>Starting at instruction 0, the verifier simulates every instruction on an <em>abstract</em> machine state: eleven registers plus a 512-byte stack, each described by a <code>struct bpf_reg_state</code>. Each register has a <strong>type</strong>: <code>NOT_INIT</code>, <code>SCALAR_VALUE</code>, or a pointer type such as <code>PTR_TO_CTX</code>, <code>PTR_TO_STACK</code>, <code>PTR_TO_MAP_VALUE</code>, <code>PTR_TO_MAP_VALUE_OR_NULL</code>, <code>PTR_TO_PACKET</code> and <code>PTR_TO_PACKET_END</code>.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a> R1 starts as <code>PTR_TO_CTX</code>; R10 is the read-only frame pointer. After a helper call R1-R5 become unreadable and R0 takes the helper's declared return type, while callee-saved R6-R9 keep their state.</p>
+<p>Types drive the rules. Adding two pointers yields a scalar that can never be dereferenced. A map lookup returns <code>PTR_TO_MAP_VALUE_OR_NULL</code>, and storing through it fails with <code>R0 invalid mem access 'map_value_or_null'</code> until a <code>if r0 == 0</code> branch refines it to <code>PTR_TO_MAP_VALUE</code> on the non-null side. Every copy of that pointer shares an <code>id</code>, so one null check upgrades them all. Socket lookups return reference-counted pointers; exit with one still held and you get <code>Unreleased reference id=1</code>.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a></p>
+
+<div class="diagram-container"><h4>Verifier pipeline at BPF_PROG_LOAD</h4>
+<svg width="760" height="230" viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="10" y="80" width="120" height="60" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="70" y="106" fill="#e1e4ed" font-size="13" text-anchor="middle">BPF bytecode</text>
+  <text x="70" y="124" fill="#8b90a0" font-size="11" text-anchor="middle">from clang/libbpf</text>
+  <rect x="165" y="80" width="130" height="60" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="230" y="106" fill="#e1e4ed" font-size="13" text-anchor="middle">Pass 1: CFG</text>
+  <text x="230" y="124" fill="#8b90a0" font-size="11" text-anchor="middle">jumps, unreachable</text>
+  <rect x="330" y="60" width="180" height="100" rx="8" fill="#232733" stroke="#ffd93d"/>
+  <text x="420" y="86" fill="#e1e4ed" font-size="13" text-anchor="middle">Pass 2: path walk</text>
+  <text x="420" y="106" fill="#8b90a0" font-size="11" text-anchor="middle">types + ranges + tnums</text>
+  <text x="420" y="122" fill="#8b90a0" font-size="11" text-anchor="middle">refs, stack init, helpers</text>
+  <text x="420" y="138" fill="#8b90a0" font-size="11" text-anchor="middle">prune via state cache</text>
+  <rect x="545" y="30" width="200" height="56" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="645" y="54" fill="#e1e4ed" font-size="13" text-anchor="middle">Fixups + JIT</text>
+  <text x="645" y="72" fill="#8b90a0" font-size="11" text-anchor="middle">spectre masks, blinding</text>
+  <rect x="545" y="134" width="200" height="56" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="645" y="158" fill="#ff6b9d" font-size="13" text-anchor="middle">Reject: -EACCES/-EINVAL</text>
+  <text x="645" y="176" fill="#8b90a0" font-size="11" text-anchor="middle">verifier log explains why</text>
+  <line x1="130" y1="110" x2="163" y2="110" stroke="#8b90a0" marker-end="url(#a)"/>
+  <line x1="295" y1="110" x2="328" y2="110" stroke="#8b90a0" marker-end="url(#a)"/>
+  <line x1="510" y1="90" x2="543" y2="62" stroke="#4ecdc4" marker-end="url(#a)"/>
+  <line x1="510" y1="130" x2="543" y2="158" stroke="#ff6b9d" marker-end="url(#a)"/>
+  <text x="530" y="214" fill="#8b90a0" font-size="11" text-anchor="middle">budget: 1M processed insns (privileged)</text>
+</svg></div>
+
+<h3>Value tracking: ranges plus tnums</h3>
+<p>For scalars and pointer offsets the verifier keeps signed and unsigned min/max bounds (64- and 32-bit) and a <strong>tnum</strong> (tristate number): a <code>value</code>/<code>mask</code> pair where mask bits are unknown. A byte loaded from memory is <code>(0x0; 0xff)</code>; OR with <code>0x40</code> gives <code>(0x40; 0xbf)</code>. Conditional branches refine bounds: on the true side of <code>r &gt; 8</code>, <code>umin</code> becomes 9.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a> This is classic abstract interpretation, and its soundness is subtle enough that academics have formally specified the tnum domain, proved its add/sub operators sound and optimal, and upstreamed a faster sound multiplication.<a href="https://arxiv.org/abs/2105.05398">[5]</a> The Agni tool automatically checks range-analysis soundness from kernel source; it found 27 previously unknown bugs across kernels 4.14 to 5.19.<a href="https://link.springer.com/chapter/10.1007/978-3-031-37709-9_12">[6]</a><a href="https://people.cs.rutgers.edu/~sn349/agni/">[7]</a></p>
+
+<h3>Direct packet access</h3>
+<p>Packet pointers carry a safe <em>range</em>. After <code>r5 = r3 + 14; if r5 &gt; r4 goto err</code> (with r4 = <code>data_end</code>), the fall-through state records <code>R3=pkt(off=0,r=14)</code>, so loads from bytes 0-13 are allowed. That is why XDP code is full of <code>if (data + sizeof(*eth) &gt; data_end) return</code> checks: they are proofs for the verifier, not just defensive style.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a></p>
+
+<div class="diagram-container"><h4>Branch refinement of a map lookup result</h4>
+<svg width="700" height="220" viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs><marker id="b" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+  <rect x="220" y="10" width="260" height="46" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="350" y="30" fill="#e1e4ed" font-size="12" text-anchor="middle">call bpf_map_lookup_elem</text>
+  <text x="350" y="47" fill="#ffd93d" font-size="11" text-anchor="middle">R0 = map_value_or_null (id=1)</text>
+  <rect x="250" y="82" width="200" height="36" rx="8" fill="#1a1d27" stroke="#8b90a0"/>
+  <text x="350" y="105" fill="#e1e4ed" font-size="12" text-anchor="middle">if r0 == 0 goto out</text>
+  <rect x="40" y="150" width="270" height="56" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="175" y="172" fill="#4ecdc4" font-size="12" text-anchor="middle">fall-through: R0 = map_value</text>
+  <text x="175" y="192" fill="#8b90a0" font-size="11" text-anchor="middle">*(u64 *)(r0 + 0) = 1  accepted</text>
+  <rect x="390" y="150" width="270" height="56" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="525" y="172" fill="#ff6b9d" font-size="12" text-anchor="middle">taken: R0 = scalar 0</text>
+  <text x="525" y="192" fill="#8b90a0" font-size="11" text-anchor="middle">store through r0 rejected</text>
+  <line x1="350" y1="56" x2="350" y2="80" stroke="#8b90a0" marker-end="url(#b)"/>
+  <line x1="300" y1="118" x2="200" y2="148" stroke="#4ecdc4" marker-end="url(#b)"/>
+  <line x1="400" y1="118" x2="500" y2="148" stroke="#ff6b9d" marker-end="url(#b)"/>
+</svg></div>
+
+<h3>Taming path explosion: pruning and liveness</h3>
+<p>Naively, every branch doubles the work. The verifier instead keeps a cache of previously verified states per instruction (checkpoints). When it reaches an instruction in a state that is a <em>subset</em> of one already proven safe (same types, ranges at least as tight, packet range at least as long), it prunes the path (<code>regsafe()</code>, <code>states_equal()</code>). Liveness tracking makes this effective: registers and stack slots never read later are dropped from the comparison, so states differing only in dead values collapse together.<a href="https://docs.kernel.org/bpf/verifier.html">[1]</a> Heuristics in the kernel avoid adding checkpoints too often, evict states that keep missing, and detect identical states across loop iterations as an infinite loop.<a href="https://github.com/torvalds/linux/blob/master/kernel/bpf/states.c">[8]</a></p>
+
+<div class="comparison">
+  <div class="comparison-card"><h4 style="color:#6c8cff">Bounded loops (5.3+)</h4><ul>
+    <li>Verifier simulates every iteration</li>
+    <li>Same state twice means reject: infinite loop</li>
+    <li>100 iterations x 20 insns eats thousands of budget</li>
+    <li>Clamp loop bounds derived from packet fields</li>
+  </ul></div>
+  <div class="comparison-card"><h4 style="color:#4ecdc4">bpf_loop / iterators / may_goto</h4><ul>
+    <li>Runtime enforces termination</li>
+    <li>Body verified roughly once</li>
+    <li>Same state twice means converge and prune</li>
+    <li>bpf_loop allows up to 1&lt;&lt;23 iterations</li>
+  </ul></div>
+</div>
+<p>Limits keep the verifier itself bounded: until 5.2 programs were capped at 4096 instructions with a 128k complexity limit; since then the processed-instruction budget is 1 million.<a href="https://docs.ebpf.io/linux/concepts/verifier/">[2]</a> At BPF Conference 2025, the BPF maintainers noted programs now hit that limit often, mainly from <code>always_inline</code> and <code>#pragma unroll</code>, and recommended global functions, iterators and <code>may_goto</code>/<code>can_loop</code> instead.<a href="https://bpfconf.ebpf.io/bpfconf2025/bpfconf2025_material/Beyond%201M%20instructions.pdf">[4]</a></p>
+
+<h3>After acceptance: Spectre and JIT hardening</h3>
+<p>Proving architectural safety is not enough on speculative CPUs. For unprivileged loaders, <code>sanitize_ptr_alu()</code> records a limit for each variable pointer offset; a fixup pass then emits masking instructions, and the verifier explores a simulated speculative path to check that truncated offsets stay in bounds.<a href="https://github.com/torvalds/linux/blob/master/kernel/bpf/verifier.c">[9]</a><a href="https://lkml.indiana.edu/2104.3/00999.html">[10]</a> Separately, <code>bpf_jit_harden</code> enables constant blinding, rewriting each immediate <code>K</code> as <code>(RND ^ K) ^ RND</code> so attacker-chosen constants never appear verbatim in executable memory (JIT spraying).<a href="https://github.com/torvalds/linux/commit/4f3446bb809f20ad56cadf712e6006815ae7a8f9">[11]</a> Research such as BeeBox continues to harden BPF against transient-execution attacks.<a href="https://www.usenix.org/system/files/usenixsecurity24-jin-di.pdf">[12]</a></p>
+
+<div class="callout"><strong>Practical tip:</strong> when a load fails, read the log from the bottom up. The last lines show the failing instruction and the abstract state, e.g. <code>R0 invalid mem access 'map_value_or_null'</code> or <code>invalid stack off=8 size=8</code>, which usually point to a missing null check, bounds check or stack initialization.</div>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">XDP load balancing</div><div class="desc">Meta's Katran runs an L4 load balancer as XDP programs; every packet access is guarded by data_end checks the verifier relies on.<a href="https://github.com/facebookincubator/katran">[13]</a></div></div>
+  <div class="use-case"><div class="label">Kubernetes networking</div><div class="desc">Cilium implements service routing and network policy in eBPF programs that must pass the verifier on each node's kernel.<a href="https://docs.cilium.io/en/stable/overview/intro/">[14]</a></div></div>
+  <div class="use-case"><div class="label">Production tracing</div><div class="desc">bpftrace compiles one-liners to BPF; the verifier is why it is safe to attach to live kernel functions on production hosts.<a href="https://github.com/bpftrace/bpftrace">[15]</a></div></div>
+  <div class="use-case"><div class="label">Unprivileged lockdown</div><div class="desc">Because verifier bugs are exploitable, the <code>kernel.unprivileged_bpf_disabled</code> sysctl lets admins restrict loading to privileged users.<a href="https://docs.kernel.org/admin-guide/sysctl/kernel.html">[16]</a></div></div>
+</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+<li><a href="https://docs.kernel.org/bpf/verifier.html">eBPF verifier, Linux kernel documentation</a></li>
+<li><a href="https://docs.ebpf.io/linux/concepts/verifier/">Verifier, eBPF Docs</a></li>
+<li><a href="https://docs.ebpf.io/linux/concepts/loops/">Loops, eBPF Docs</a></li>
+<li><a href="https://bpfconf.ebpf.io/bpfconf2025/bpfconf2025_material/Beyond%201M%20instructions.pdf">Beyond 1M instructions, BPF Conference 2025 slides</a></li>
+<li><a href="https://arxiv.org/abs/2105.05398">Vishwanathan et al., Sound, Precise, and Fast Abstract Interpretation with Tristate Numbers (CGO 2022)</a></li>
+<li><a href="https://link.springer.com/chapter/10.1007/978-3-031-37709-9_12">Vishwanathan et al., Verifying the Verifier: eBPF Range Analysis Verification (CAV 2023)</a></li>
+<li><a href="https://people.cs.rutgers.edu/~sn349/agni/">Agni project page, Rutgers</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/kernel/bpf/states.c">kernel/bpf/states.c, Linux source</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/kernel/bpf/verifier.c">kernel/bpf/verifier.c, Linux source</a></li>
+<li><a href="https://lkml.indiana.edu/2104.3/00999.html">Borkmann, bpf: Tighten speculative pointer arithmetic mask (LKML)</a></li>
+<li><a href="https://github.com/torvalds/linux/commit/4f3446bb809f20ad56cadf712e6006815ae7a8f9">bpf: add generic constant blinding for use in jits (commit 4f3446b)</a></li>
+<li><a href="https://www.usenix.org/system/files/usenixsecurity24-jin-di.pdf">Jin et al., BeeBox: Hardening BPF against Transient Execution Attacks (USENIX Security 2024)</a></li>
+<li><a href="https://github.com/facebookincubator/katran">Katran, GitHub</a></li>
+<li><a href="https://docs.cilium.io/en/stable/overview/intro/">Introduction to Cilium, Cilium docs</a></li>
+<li><a href="https://github.com/bpftrace/bpftrace">bpftrace, GitHub</a></li>
+<li><a href="https://docs.kernel.org/admin-guide/sysctl/kernel.html">Documentation for /proc/sys/kernel/, Linux kernel docs</a></li>
+</ol>
+</div>
+</body>
+</html>

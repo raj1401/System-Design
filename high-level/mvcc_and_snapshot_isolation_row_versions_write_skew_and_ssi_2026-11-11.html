@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MVCC and Snapshot Isolation: Row Versions, Write Skew, and Serializable SI</title>
+<meta name="description" content="How multi-version concurrency control lets readers and writers stop blocking each other, how snapshot isolation picks visible versions with first-committer-wins, why it still permits write skew, and how Serializable Snapshot Isolation detects dangerous rw-antidependency structures to restore serializability.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>MVCC and Snapshot Isolation: Row Versions, Write Skew, and Serializable SI</h1>
+<p class="subtitle">Why readers never block writers in modern databases, and the one anomaly that sneaks through anyway.</p>
+<p class="meta">November 11, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p><strong>Multi-version concurrency control (MVCC)</strong> keeps several versions of each row instead of overwriting in place. A transaction reads from a consistent <em>snapshot</em>, the set of versions committed as of some point in time, while writers keep producing new versions. Readers therefore never wait on writers, and writers never wait on readers.</p>
+<p><strong>Snapshot Isolation (SI)</strong>, formalized by Berenson et al. in <a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf">A Critique of ANSI SQL Isolation Levels</a> [1], is the isolation level MVCC naturally gives you: read a snapshot taken at your start timestamp, and commit only if no concurrent transaction already committed a write to the same items (<em>first-committer-wins</em>). SI prevents dirty reads, non-repeatable reads, and lost updates, but it is <em>not</em> serializable: it allows <strong>write skew</strong>. <strong>Serializable Snapshot Isolation (SSI)</strong> [3][4] closes that gap by detecting dangerous read-write dependency patterns at runtime and aborting one transaction.</p>
+
+<div class="callout"><strong>Why this matters for system design:</strong> PostgreSQL REPEATABLE READ, InnoDB consistent reads, CockroachDB, and Spanner snapshot reads are all built on MVCC. Knowing exactly which anomalies your isolation level permits is the difference between a correct invariant and a production incident that only happens under concurrency.</div>
+
+<h2>Deeper Dive</h2>
+
+<h3>1. Versions and visibility</h3>
+<p>Every write creates a new version stamped with the writing transaction. In PostgreSQL each row version (tuple) carries <code>xmin</code>, the ID of the inserting transaction, and <code>xmax</code>, the ID of the deleting or superseding transaction (zero if still live); an update is a delete of the old version plus an insert of a new one [5]. A reader compares those IDs against its snapshot, the set of transactions that had committed when the snapshot was taken, and sees a version only if its creator committed before the snapshot and its deleter did not [5][7].</p>
+<p>InnoDB takes the opposite physical approach. The clustered-index row holds only the newest version plus a 6-byte <code>DB_TRX_ID</code> and a 7-byte <code>DB_ROLL_PTR</code> pointing into the undo log; a consistent read walks that roll pointer chain backward to rebuild the version its read view is allowed to see [8][9].</p>
+
+<div class="diagram-container">
+<h4>Version chain and snapshot visibility</h4>
+<svg width="740" height="280" viewBox="0 0 740 280" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <text x="20" y="30" fill="#e1e4ed" font-size="13" font-weight="600">Logical row: account id=42</text>
+  <rect x="20" y="50" width="200" height="80" rx="8" fill="#232733" stroke="#8b90a0"/>
+  <text x="120" y="76" fill="#e1e4ed" font-size="13" text-anchor="middle">v1: balance = 100</text>
+  <text x="120" y="98" fill="#8b90a0" font-size="11" text-anchor="middle">created by T10 (commit ts 10)</text>
+  <text x="120" y="116" fill="#8b90a0" font-size="11" text-anchor="middle">superseded by T20</text>
+  <rect x="270" y="50" width="200" height="80" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="370" y="76" fill="#e1e4ed" font-size="13" text-anchor="middle">v2: balance = 70</text>
+  <text x="370" y="98" fill="#8b90a0" font-size="11" text-anchor="middle">created by T20 (commit ts 20)</text>
+  <text x="370" y="116" fill="#8b90a0" font-size="11" text-anchor="middle">superseded by T30</text>
+  <rect x="520" y="50" width="200" height="80" rx="8" fill="#232733" stroke="#ff6b9d"/>
+  <text x="620" y="76" fill="#e1e4ed" font-size="13" text-anchor="middle">v3: balance = 40</text>
+  <text x="620" y="98" fill="#8b90a0" font-size="11" text-anchor="middle">created by T30</text>
+  <text x="620" y="116" fill="#ff6b9d" font-size="11" text-anchor="middle">not yet committed</text>
+  <line x1="220" y1="90" x2="268" y2="90" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="470" y1="90" x2="518" y2="90" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="20" y="170" width="220" height="70" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="130" y="195" fill="#6c8cff" font-size="12" font-weight="600" text-anchor="middle">Reader A (snapshot ts 15)</text>
+  <text x="130" y="218" fill="#e1e4ed" font-size="12" text-anchor="middle">sees v1 = 100</text>
+  <rect x="270" y="170" width="220" height="70" rx="8" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="380" y="195" fill="#6c8cff" font-size="12" font-weight="600" text-anchor="middle">Reader B (snapshot ts 25)</text>
+  <text x="380" y="218" fill="#e1e4ed" font-size="12" text-anchor="middle">sees v2 = 70</text>
+  <rect x="520" y="170" width="200" height="70" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="620" y="195" fill="#ffd93d" font-size="12" font-weight="600" text-anchor="middle">Garbage collector</text>
+  <text x="620" y="218" fill="#e1e4ed" font-size="11" text-anchor="middle">drops v1 once no snapshot &lt; 20</text>
+  <line x1="120" y1="168" x2="120" y2="132" stroke="#6c8cff" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <line x1="370" y1="168" x2="370" y2="132" stroke="#6c8cff" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+  <text x="370" y="268" fill="#8b90a0" font-size="11" text-anchor="middle">Each reader picks the newest version committed at or before its snapshot; uncommitted v3 is invisible to both.</text>
+</svg>
+</div>
+
+<h3>2. Snapshot Isolation rules</h3>
+<p>Berenson et al. define SI precisely [1]: a transaction reads from the committed state as of its <em>Start-Timestamp</em> (plus its own writes). At commit it takes a <em>Commit-Timestamp</em> and succeeds only if no other transaction with a commit timestamp inside its <code>[start, commit]</code> interval wrote any item it also wrote. That <strong>first-committer-wins</strong> rule prevents lost updates. Because the snapshot is fixed, SI also avoids the read skew and predicate re-read anomalies that plague lock-based REPEATABLE READ, which makes SI <em>incomparable</em> to REPEATABLE READ and strictly weaker than SERIALIZABLE [1][2].</p>
+<p>In practice, PostgreSQL READ COMMITTED takes a fresh snapshot per statement and REPEATABLE READ uses one snapshot for the whole transaction [6]; InnoDB REPEATABLE READ (its default) pins the snapshot at the first consistent read [10]. Concurrent writers to the same row get a serialization failure or block on the row lock, and the application must retry [6].</p>
+
+<h3>3. Write skew: the anomaly SI lets through</h3>
+<p>SI only checks <em>write-write</em> overlap. If two transactions read overlapping data but write <em>disjoint</em> items, both commit even when together they break an invariant. Berenson's history H5 is the canonical case: with the constraint <code>x + y &gt; 0</code> and both starting at 50, T1 reads x and y and sets y = -40, T2 reads the same snapshot and sets x = -40. Each transaction preserved the constraint against its snapshot; the combined result violates it [1]. Real-world variants: two on-call engineers each checking that someone else is on call before going off shift, or two bookings each confirming a room is free before inserting a reservation.</p>
+
+<div class="diagram-container">
+<h4>Write skew under snapshot isolation</h4>
+<svg width="740" height="250" viewBox="0 0 740 250" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <text x="20" y="25" fill="#8b90a0" font-size="12">Invariant: x + y &gt; 0 &#160;&#160; initial x = 50, y = 50</text>
+  <line x1="90" y1="70" x2="720" y2="70" stroke="#6c8cff" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="20" y="75" fill="#6c8cff" font-size="13" font-weight="600">T1</text>
+  <line x1="90" y1="150" x2="720" y2="150" stroke="#4ecdc4" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="20" y="155" fill="#4ecdc4" font-size="13" font-weight="600">T2</text>
+  <circle cx="130" cy="70" r="5" fill="#6c8cff"/><text x="130" y="55" fill="#e1e4ed" font-size="11" text-anchor="middle">snapshot</text>
+  <circle cx="160" cy="150" r="5" fill="#4ecdc4"/><text x="160" y="175" fill="#e1e4ed" font-size="11" text-anchor="middle">snapshot</text>
+  <rect x="210" y="56" width="120" height="28" rx="6" fill="#232733" stroke="#6c8cff"/><text x="270" y="75" fill="#e1e4ed" font-size="11" text-anchor="middle">read x=50, y=50</text>
+  <rect x="240" y="136" width="120" height="28" rx="6" fill="#232733" stroke="#4ecdc4"/><text x="300" y="155" fill="#e1e4ed" font-size="11" text-anchor="middle">read x=50, y=50</text>
+  <rect x="380" y="56" width="110" height="28" rx="6" fill="#232733" stroke="#6c8cff"/><text x="435" y="75" fill="#e1e4ed" font-size="11" text-anchor="middle">write y = -40</text>
+  <rect x="410" y="136" width="110" height="28" rx="6" fill="#232733" stroke="#4ecdc4"/><text x="465" y="155" fill="#e1e4ed" font-size="11" text-anchor="middle">write x = -40</text>
+  <circle cx="560" cy="70" r="7" fill="#ffd93d"/><text x="560" y="55" fill="#ffd93d" font-size="11" text-anchor="middle">commit OK</text>
+  <circle cx="590" cy="150" r="7" fill="#ffd93d"/><text x="590" y="175" fill="#ffd93d" font-size="11" text-anchor="middle">commit OK</text>
+  <text x="560" y="110" fill="#8b90a0" font-size="11" text-anchor="middle">write sets {y} and {x} are disjoint,</text>
+  <text x="560" y="124" fill="#8b90a0" font-size="11" text-anchor="middle">so first-committer-wins finds no conflict</text>
+  <rect x="140" y="200" width="460" height="34" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="370" y="222" fill="#ff6b9d" font-size="12" font-weight="600" text-anchor="middle">Final state x = -40, y = -40: invariant broken, no serial order produces this</text>
+</svg>
+</div>
+
+<h3>4. Serializable Snapshot Isolation (SSI)</h3>
+<p>Fekete et al. proved that every non-serializable SI execution contains a <strong>dangerous structure</strong>: two consecutive <em>rw-antidependency</em> edges between concurrent transactions, <code>T_in &rarr; T_pivot &rarr; T_out</code> (an rw edge means one transaction read a version that the other overwrote) [3][11]. Cahill, R&ouml;hm and Fekete turned that theorem into a runtime algorithm: keep running transactions under SI, track rw-conflicts with non-blocking SIREAD markers, and abort a transaction when a pivot with both an incoming and an outgoing edge appears [3]. Readers still never block writers, at the price of occasional false-positive aborts [11].</p>
+<p>PostgreSQL 9.1 shipped the first production SSI as its SERIALIZABLE level, with a purpose-built predicate lock manager, bounded-memory summarization of old transactions, and a read-only optimization; Ports and Grittner measured a cost under 7% relative to SI, and large wins over two-phase locking on read-heavy workloads [4].</p>
+
+<div class="diagram-container">
+<h4>SSI dangerous structure (rw-antidependencies)</h4>
+<svg width="700" height="190" viewBox="0 0 700 190" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr3" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#ff6b9d"/></marker>
+    <marker id="arr4" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="30" y="50" width="150" height="60" rx="10" fill="#232733" stroke="#6c8cff"/>
+  <text x="105" y="78" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">T_in</text>
+  <text x="105" y="97" fill="#8b90a0" font-size="11" text-anchor="middle">reads y</text>
+  <rect x="275" y="50" width="150" height="60" rx="10" fill="#232733" stroke="#ffd93d"/>
+  <text x="350" y="78" fill="#ffd93d" font-size="14" font-weight="600" text-anchor="middle">T_pivot</text>
+  <text x="350" y="97" fill="#8b90a0" font-size="11" text-anchor="middle">writes y, reads x</text>
+  <rect x="520" y="50" width="150" height="60" rx="10" fill="#232733" stroke="#4ecdc4"/>
+  <text x="595" y="78" fill="#e1e4ed" font-size="14" font-weight="600" text-anchor="middle">T_out</text>
+  <text x="595" y="97" fill="#8b90a0" font-size="11" text-anchor="middle">writes x, commits first</text>
+  <line x1="180" y1="80" x2="272" y2="80" stroke="#ff6b9d" stroke-width="2" marker-end="url(#arr3)"/>
+  <text x="227" y="70" fill="#ff6b9d" font-size="11" text-anchor="middle">rw(y)</text>
+  <line x1="425" y1="80" x2="517" y2="80" stroke="#ff6b9d" stroke-width="2" marker-end="url(#arr3)"/>
+  <text x="472" y="70" fill="#ff6b9d" font-size="11" text-anchor="middle">rw(x)</text>
+  <path d="M595,112 C595,165 105,165 105,113" fill="none" stroke="#8b90a0" stroke-dasharray="5,4" stroke-width="1.5" marker-end="url(#arr4)"/>
+  <text x="350" y="160" fill="#8b90a0" font-size="11" text-anchor="middle">optional path closing the cycle (in write skew, T_in and T_out are the same transaction)</text>
+  <text x="350" y="30" fill="#e1e4ed" font-size="12" text-anchor="middle">Pivot has an incoming AND outgoing concurrent rw edge, so SSI aborts one transaction</text>
+</svg>
+</div>
+
+<h3>5. The cost: garbage, long transactions, and wraparound</h3>
+<p>Old versions must stay as long as any snapshot might need them. PostgreSQL leaves dead tuples in the heap until <code>VACUUM</code> reclaims them, and must also freeze old rows because its 32-bit transaction IDs wrap around; a table must be vacuumed at least once every two billion transactions to avoid catastrophic invisibility [12][13]. InnoDB keeps update-undo records until no read view needs them and then purges them; MySQL explicitly warns that long-running transactions, even read-only ones, let the rollback segment grow until it fills the undo tablespace [8][14]. A forgotten idle transaction is therefore a classic MVCC outage cause.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Snapshot Isolation</h4>
+    <ul>
+      <li>Readers never block, writers conflict only on same item</li>
+      <li>First-committer-wins prevents lost updates</li>
+      <li>Permits write skew and read-only anomalies</li>
+      <li>Fix by hand: <code>SELECT ... FOR UPDATE</code> or materialized conflicts</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Serializable SI</h4>
+    <ul>
+      <li>Same non-blocking reads as SI</li>
+      <li>Tracks rw-antidependencies with SIREAD markers</li>
+      <li>Aborts on dangerous structures, so clients must retry</li>
+      <li>Small overhead; some false-positive aborts</li>
+    </ul>
+  </div>
+</div>
+
+<h3>6. MVCC in distributed databases</h3>
+<p>MVCC generalizes nicely once versions are keyed by timestamps rather than local transaction IDs. CockroachDB stamps each transaction with a hybrid logical clock timestamp, serves reads at that timestamp from MVCC history, and uses a timestamp cache to push or restart writers that would invalidate a read, giving serializable isolation by default [15][16]. Spanner assigns TrueTime commit timestamps, so a snapshot read at timestamp <em>t</em> returns a globally consistent view from any sufficiently up-to-date replica without taking locks; clients can even request bounded-staleness reads [17][18].</p>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">PostgreSQL</div><div class="desc">Heap tuples with xmin/xmax, per-statement or per-transaction snapshots, and SSI behind SERIALIZABLE [4][5][6].</div></div>
+  <div class="use-case"><div class="label">MySQL InnoDB</div><div class="desc">Newest row in place, older versions rebuilt from undo logs for consistent nonlocking reads; purge threads collect history [8][10][14].</div></div>
+  <div class="use-case"><div class="label">CockroachDB</div><div class="desc">HLC-timestamped MVCC keys plus a timestamp cache to keep distributed transactions serializable [15][16].</div></div>
+  <div class="use-case"><div class="label">Google Spanner</div><div class="desc">TrueTime-stamped versions enable lock-free, globally consistent snapshot and stale reads [17][18].</div></div>
+  <div class="use-case"><div class="label">Consistent backups</div><div class="desc">A long-lived snapshot lets <code>pg_dump</code>-style exports or analytics scans read a coherent state while OLTP writes continue (at the cost of retained versions).</div></div>
+  <div class="use-case"><div class="label">Booking and scheduling</div><div class="desc">Room, seat, and on-call invariants are the textbook write-skew victims; use SERIALIZABLE or explicit locking for them.</div></div>
+</div>
+
+<div class="callout"><strong>Design checklist:</strong> (1) Know which level your database calls REPEATABLE READ versus SERIALIZABLE, because the names are not portable. (2) If an invariant spans multiple rows, either run at SSI and retry on serialization failure, or lock the rows you read. (3) Alert on the oldest open transaction age; it governs version bloat.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>H. Berenson, P. Bernstein, J. Gray, J. Melton, E. O'Neil, P. O'Neil. <a href="https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-95-51.pdf">A Critique of ANSI SQL Isolation Levels</a>. SIGMOD 1995 / Microsoft Research TR-95-51.</li>
+  <li>M. Whittaker. <a href="https://mwhittaker.github.io/papers/html/berenson1995critique.html">Paper notes: A Critique of ANSI SQL Isolation Levels</a>.</li>
+  <li>M. J. Cahill, U. R&ouml;hm, A. D. Fekete. <a href="https://doi.org/10.1145/1376616.1376690">Serializable Isolation for Snapshot Databases</a>. SIGMOD 2008.</li>
+  <li>D. R. K. Ports, K. Grittner. <a href="http://vldb.org/pvldb/vol5/p1850_danrkports_vldb2012.pdf">Serializable Snapshot Isolation in PostgreSQL</a>. PVLDB 5(12), VLDB 2012.</li>
+  <li>PostgreSQL Documentation. <a href="https://www.postgresql.org/docs/current/ddl-system-columns.html">5.6 System Columns (xmin, xmax)</a>.</li>
+  <li>PostgreSQL Documentation. <a href="https://www.postgresql.org/docs/current/transaction-iso.html">13.2 Transaction Isolation</a>.</li>
+  <li>H. Suzuki. <a href="https://www.interdb.jp/pg/pgsql05/06/index.html">The Internals of PostgreSQL: Visibility Check Rules</a>.</li>
+  <li>MySQL Reference Manual. <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html">InnoDB Multi-Versioning</a>.</li>
+  <li>MySQL Reference Manual. <a href="https://dev.mysql.com/doc/refman/26.10/en/innodb-undo-logs.html">InnoDB Undo Logs</a>.</li>
+  <li>MySQL Reference Manual. <a href="https://dev.mysql.com/doc/refman/26.10/en/innodb-consistent-read.html">Consistent Nonlocking Reads</a>.</li>
+  <li>PostgreSQL source. <a href="https://github.com/postgres/postgres/blob/master/src/backend/storage/lmgr/README-SSI">src/backend/storage/lmgr/README-SSI</a>; see also the <a href="https://wiki.postgresql.org/wiki/Serializable">PostgreSQL wiki: Serializable</a>.</li>
+  <li>PostgreSQL Documentation. <a href="https://www.postgresql.org/docs/current/routine-vacuuming.html">24.1 Routine Vacuuming</a>.</li>
+  <li>PostgreSQL Documentation. <a href="https://www.postgresql.org/docs/current/sql-vacuum.html">VACUUM</a>.</li>
+  <li>AWS Database Blog. <a href="https://aws.amazon.com/blogs/database/achieve-a-high-speed-innodb-purge-on-amazon-rds-for-mysql-and-amazon-aurora-mysql/">Achieve a high-speed InnoDB purge on Amazon RDS for MySQL and Amazon Aurora MySQL</a>.</li>
+  <li>Cockroach Labs. <a href="https://www.cockroachlabs.com/docs/stable/architecture/transaction-layer">CockroachDB Architecture: Transaction Layer</a>.</li>
+  <li>Cockroach Labs Blog. <a href="https://www.cockroachlabs.com/blog/serializable-lockless-distributed-isolation-cockroachdb/">Serializable, Lockless, Distributed: Isolation in CockroachDB</a>.</li>
+  <li>Google Cloud. <a href="https://cloud.google.com/spanner/docs/true-time-external-consistency">Spanner: TrueTime and external consistency</a>.</li>
+  <li>Google Cloud. <a href="https://docs.cloud.google.com/spanner/docs/timestamp-bounds">Spanner: Timestamp bounds</a>.</li>
+</ol>
+</div>
+</body>
+</html>

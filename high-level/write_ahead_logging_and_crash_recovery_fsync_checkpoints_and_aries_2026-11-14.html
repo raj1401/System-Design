@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Write-Ahead Logging and Crash Recovery: fsync, Checkpoints, and ARIES</title>
+<meta name="description" content="Write-ahead logging explained: the log-before-data rule, LSNs, group commit and fsync, checkpoints, torn-page protection, ARIES analysis, redo and undo recovery, and how PostgreSQL, InnoDB and SQLite apply it.">
+<style> block into the document's <head> EXACTLY as written, character for
+character, with no changes to variable names, colors, class names, or values:
+
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">High-Level System Design</div>
+<h1>Write-Ahead Logging and Crash Recovery: fsync, Checkpoints, and ARIES</h1>
+<p class="subtitle">How databases promise durability with one sequential log, and how they rebuild themselves after the power goes out.</p>
+<p class="meta">November 14, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>A database keeps hot pages in memory and writes them back to disk lazily, so at any instant the data files are a mix of old and new versions. <strong>Write-ahead logging (WAL)</strong> makes that safe with a single rule: <em>describe every change in an append-only log, and force the log to stable storage before the changed data page may reach disk and before a commit is acknowledged</em>. After a crash, the system replays the log to redo committed work that never reached the data files and undoes work from transactions that never committed. The log is sequential, so a commit costs one log flush (often shared by many transactions) instead of many random page writes. This is the core idea behind recovery in PostgreSQL, InnoDB, SQLite (in WAL mode), and the <a href="https://doi.org/10.1145/128765.128770">ARIES</a> algorithm that shaped most commercial engines.</p>
+
+<div class="callout"><strong>The two WAL invariants.</strong> (1) <em>Log before data:</em> a dirty page may be flushed only after the log is durable up to the last record that touched that page. (2) <em>Log before commit:</em> a transaction is reported committed only after its commit record is durable. Break either one and recovery can no longer reconstruct a correct state.</div>
+
+<h2>Deeper dive: the mechanisms</h2>
+
+<h3>Log records and LSNs</h3>
+<p>Each change produces a log record tagged with a monotonically increasing <code>LSN</code> (log sequence number). Records may carry redo information (the after-image or an operation), undo information (the before-image), or both, as the <a href="https://research.cs.wisc.edu/coral/minibase/logMgr/report/node2.html">Minibase ARIES notes</a> describe. Every data page stores a <code>pageLSN</code>: the LSN of the last record applied to it. That single number is what makes recovery idempotent, because redo can skip any record whose LSN is not greater than the page&rsquo;s pageLSN. In ARIES, records also carry a <code>PrevLSN</code> chaining a transaction&rsquo;s records backwards, which undo follows (<a href="https://www.cs.cmu.edu/~natassa/courses/15-721/papers/p1-mohan.pdf">Mohan, Repeating History Beyond ARIES</a>).</p>
+
+<h3>Steal / no-force: why both redo and undo are needed</h3>
+<p>WAL engines typically choose a <em>steal</em> buffer policy (an uncommitted transaction&rsquo;s dirty page may be written to disk to free memory) and <em>no-force</em> (committed pages need not be flushed at commit). Steal means the disk can contain uncommitted changes, so recovery needs <strong>undo</strong>. No-force means the disk can be missing committed changes, so recovery needs <strong>redo</strong>. WAL pays for this flexibility with one cheap sequential write per commit.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Rollback journal (undo log)</h4>
+    <ul>
+      <li>Copy the original page to a journal, then overwrite the database in place</li>
+      <li>Commit requires the database pages themselves to be durable</li>
+      <li>Recovery restores old pages from the journal</li>
+      <li>SQLite&rsquo;s default <code>journal_mode=DELETE</code></li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Write-ahead log (redo-centric)</h4>
+    <ul>
+      <li>Append changes to the log; data pages are written later</li>
+      <li>Commit needs only the log flushed up to the commit record</li>
+      <li>Recovery replays the log forward from a checkpoint</li>
+      <li>Readers can keep using older pages while writers append</li>
+    </ul>
+  </div>
+</div>
+
+<div class="diagram-container">
+<h4>The write path: log first, pages later</h4>
+<svg viewBox="0 0 760 300" width="100%" style="max-width:760px" font-family="Inter,sans-serif">
+  <defs><marker id="a1" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#8b90a0"/></marker></defs>
+  <rect x="20" y="30" width="140" height="56" rx="8" fill="#232733" stroke="#6c8cff"/>
+  <text x="90" y="54" text-anchor="middle" fill="#e1e4ed" font-size="13">Transaction</text>
+  <text x="90" y="72" text-anchor="middle" fill="#8b90a0" font-size="11">UPDATE / COMMIT</text>
+  <rect x="230" y="20" width="200" height="76" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="330" y="44" text-anchor="middle" fill="#e1e4ed" font-size="13">Buffer pool (RAM)</text>
+  <text x="330" y="64" text-anchor="middle" fill="#8b90a0" font-size="11">dirty page, pageLSN=104</text>
+  <text x="330" y="82" text-anchor="middle" fill="#8b90a0" font-size="11">+ WAL buffer</text>
+  <path d="M160,58 L226,58" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#a1)"/>
+  <text x="193" y="50" text-anchor="middle" fill="#8b90a0" font-size="10">1</text>
+  <rect x="500" y="20" width="240" height="76" rx="8" fill="#1a1d27" stroke="#ffd93d"/>
+  <text x="620" y="42" text-anchor="middle" fill="#ffd93d" font-size="13">WAL on disk (sequential)</text>
+  <g font-size="10" fill="#0f1117">
+    <rect x="515" y="56" width="40" height="26" fill="#6c8cff"/><text x="535" y="73" text-anchor="middle">101</text>
+    <rect x="559" y="56" width="40" height="26" fill="#6c8cff"/><text x="579" y="73" text-anchor="middle">102</text>
+    <rect x="603" y="56" width="40" height="26" fill="#6c8cff"/><text x="623" y="73" text-anchor="middle">104</text>
+    <rect x="647" y="56" width="78" height="26" fill="#4ecdc4"/><text x="686" y="73" text-anchor="middle">105 COMMIT</text>
+  </g>
+  <path d="M430,58 L496,58" stroke="#ffd93d" stroke-width="2" marker-end="url(#a1)"/>
+  <text x="463" y="50" text-anchor="middle" fill="#ffd93d" font-size="10">2 fsync</text>
+  <path d="M620,96 C620,140 160,130 120,150" stroke="#4ecdc4" stroke-width="1.5" fill="none" stroke-dasharray="4 3" marker-end="url(#a1)"/>
+  <text x="380" y="140" text-anchor="middle" fill="#4ecdc4" font-size="11">3 ack COMMIT once LSN 105 is durable</text>
+  <rect x="230" y="200" width="200" height="66" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+  <text x="330" y="226" text-anchor="middle" fill="#ff6b9d" font-size="13">Data files (random I/O)</text>
+  <text x="330" y="246" text-anchor="middle" fill="#8b90a0" font-size="11">written later by checkpointer</text>
+  <path d="M330,96 L330,196" stroke="#ff6b9d" stroke-width="1.5" marker-end="url(#a1)"/>
+  <text x="340" y="180" fill="#ff6b9d" font-size="10">4 only if WAL flushed &#8805; pageLSN</text>
+  <rect x="500" y="200" width="240" height="66" rx="8" fill="#232733" stroke="#8b90a0"/>
+  <text x="620" y="224" text-anchor="middle" fill="#e1e4ed" font-size="12">Crash here? Data files lag,</text>
+  <text x="620" y="242" text-anchor="middle" fill="#e1e4ed" font-size="12">but WAL has everything</text>
+  <text x="620" y="258" text-anchor="middle" fill="#8b90a0" font-size="10">needed to redo it</text>
+</svg>
+</div>
+
+<h3>fsync, group commit, and the durability knob</h3>
+<p>&ldquo;Durable&rdquo; means the log bytes survived an OS flush such as <code>fsync</code> or <code>fdatasync</code> (PostgreSQL defaults to <code>fdatasync</code> on Linux per its <a href="https://www.postgresql.org/docs/current/runtime-config-wal.html">WAL settings docs</a>). A flush costs anywhere from microseconds to milliseconds, so engines use <strong>group commit</strong>: concurrent committers piggyback on one flush. PostgreSQL exposes <code>commit_delay</code> and <code>commit_siblings</code> to deliberately wait for more company, and <code>synchronous_commit=off</code> to return before the flush at the cost of possibly losing the last few transactions, never corrupting the database (<a href="https://www.postgresql.org/docs/current/wal-async-commit.html">PostgreSQL asynchronous commit</a>). InnoDB&rsquo;s equivalent is <code>innodb_flush_log_at_trx_commit</code>, where <code>1</code> flushes at every commit and <code>0</code> flushes roughly once per second (<a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-redo-log-buffer.html">MySQL log buffer docs</a>).</p>
+
+<div class="callout"><strong>fsyncgate.</strong> In 2018 PostgreSQL developers found that on Linux a failed <code>fsync</code> could mark pages clean and clear the error, so a retried <code>fsync</code> &ldquo;succeeded&rdquo; and a checkpoint completed over lost writes (<a href="https://lwn.net/Articles/752093/">LWN report</a>, <a href="https://lwn.net/Articles/752613/">kernel follow-up</a>). The fix: PANIC on fsync failure and rely on WAL replay, back-patched to 9.4 through 11 (<a href="https://wiki.postgresql.org/wiki/Fsync_Errors">PostgreSQL wiki</a>). Lesson: a WAL is only as trustworthy as the flush semantics underneath it.</div>
+
+<h3>Checkpoints bound recovery time</h3>
+<p>Without checkpoints the log grows forever and recovery would replay it all. A checkpoint records how far the data files are known to be caught up. PostgreSQL flushes dirty pages, writes a checkpoint record, and stores its location in <code>pg_control</code>; recovery begins at that checkpoint&rsquo;s redo point and older WAL segments can be recycled (<a href="https://www.postgresql.org/docs/current/wal-configuration.html">WAL configuration</a>, <a href="https://www.postgresql.org/docs/current/wal-internals.html">WAL internals</a>). ARIES uses <em>fuzzy</em> checkpoints that just snapshot the active-transaction table and dirty-page table without stopping the world. Shorter intervals mean faster recovery but more page flushing, the core tuning trade-off.</p>
+
+<h3>Torn pages</h3>
+<p>An 8&nbsp;KB page spans multiple 512-byte sectors, so power loss mid-write can leave half old and half new data, which a small row-level redo record cannot fix (<a href="https://www.postgresql.org/docs/current/wal-reliability.html">PostgreSQL reliability</a>). PostgreSQL&rsquo;s <code>full_page_writes</code> logs a whole page image on its first modification after each checkpoint; since the log-before-data rule guarantees that image is durable before the page write starts, at most one of the two copies can be torn (<a href="https://wiki.postgresql.org/wiki/Full_page_writes">PostgreSQL wiki</a>). InnoDB instead writes pages to a <a href="https://dev.mysql.com/doc/refman/26.10/en/innodb-doublewrite-buffer.html">doublewrite buffer</a> first, then to their final location. WAL records themselves carry CRC-32C checksums, so a torn log tail simply marks where recovery stops.</p>
+
+<h3>ARIES: analysis, redo, undo</h3>
+<p>ARIES (Mohan et al., <a href="https://doi.org/10.1145/128765.128770">ACM TODS 1992</a>) restarts in three passes. <strong>Analysis</strong> scans forward from the last checkpoint to rebuild the transaction table and dirty-page table, computing <code>RedoLSN</code>, the earliest record that might be missing from disk. <strong>Redo</strong> &ldquo;repeats history&rdquo;: it reapplies every logged update from RedoLSN, including those of uncommitted losers, whenever <code>pageLSN &lt; recordLSN</code>, restoring the exact state at the crash. <strong>Undo</strong> then rolls back losers in reverse LSN order in a single backward sweep, writing <em>compensation log records</em> (CLRs) whose <code>UndoNxtLSN</code> ensures that a crash during recovery never undoes the same work twice (<a href="https://www.cs.cmu.edu/~natassa/courses/15-721/papers/p1-mohan.pdf">Mohan</a>; <a href="https://people.eecs.berkeley.edu/~fox/summaries/database/aries.html">Berkeley summary</a>). Repeating history, rather than selectively redoing only winners as System R did, is what lets ARIES support record-level locking with WAL.</p>
+
+<div class="diagram-container">
+<h4>ARIES restart: three passes over the log</h4>
+<svg viewBox="0 0 760 270" width="100%" style="max-width:760px" font-family="Inter,sans-serif">
+  <defs><marker id="a2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#e1e4ed"/></marker></defs>
+  <line x1="30" y1="60" x2="730" y2="60" stroke="#8b90a0" stroke-width="2"/>
+  <text x="30" y="40" fill="#8b90a0" font-size="11">log start</text>
+  <text x="730" y="40" text-anchor="end" fill="#ff6b9d" font-size="11">crash (end of log)</text>
+  <line x1="730" y1="48" x2="730" y2="72" stroke="#ff6b9d" stroke-width="3"/>
+  <line x1="200" y1="48" x2="200" y2="72" stroke="#6c8cff" stroke-width="3"/>
+  <text x="200" y="90" text-anchor="middle" fill="#6c8cff" font-size="11">RedoLSN</text>
+  <text x="200" y="104" text-anchor="middle" fill="#8b90a0" font-size="10">oldest dirty-page recLSN</text>
+  <line x1="380" y1="48" x2="380" y2="72" stroke="#ffd93d" stroke-width="3"/>
+  <text x="380" y="90" text-anchor="middle" fill="#ffd93d" font-size="11">last checkpoint</text>
+  <rect x="380" y="122" width="350" height="26" rx="5" fill="#ffd93d22" stroke="#ffd93d"/>
+  <path d="M390,135 L720,135" stroke="#e1e4ed" stroke-width="1.5" marker-end="url(#a2)"/>
+  <text x="555" y="166" text-anchor="middle" fill="#ffd93d" font-size="12">1. Analysis: rebuild txn table + dirty-page table</text>
+  <rect x="200" y="176" width="530" height="26" rx="5" fill="#4ecdc422" stroke="#4ecdc4"/>
+  <path d="M210,189 L720,189" stroke="#e1e4ed" stroke-width="1.5" marker-end="url(#a2)"/>
+  <text x="465" y="220" text-anchor="middle" fill="#4ecdc4" font-size="12">2. Redo: repeat history for all txns if pageLSN &lt; LSN</text>
+  <rect x="90" y="228" width="640" height="26" rx="5" fill="#ff6b9d22" stroke="#ff6b9d"/>
+  <path d="M720,241 L100,241" stroke="#e1e4ed" stroke-width="1.5" marker-end="url(#a2)"/>
+  <text x="410" y="266" text-anchor="middle" fill="#ff6b9d" font-size="12">3. Undo: roll back losers newest-first, writing CLRs</text>
+</svg>
+</div>
+
+<h3>The file system is part of your protocol</h3>
+<p>Correct WAL code still depends on ordering and atomicity guarantees from the layer below. Pillai et al. built tools to test file-system persistence properties and found 60 crash vulnerabilities across 11 widely used applications, including databases and key-value stores, many caused by assuming writes persist in order or that appends are atomic (<a href="https://www.usenix.org/conference/osdi14/technical-sessions/presentation/pillai">OSDI 2014</a>). Checksummed records, explicit flushes of both files and directories, and treating flush errors as fatal are the defensive defaults.</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">PostgreSQL</div><div class="desc">WAL with checkpoints, full-page images and CRC-checked records; the same stream feeds point-in-time recovery and streaming replicas.</div></div>
+  <div class="use-case"><div class="label">MySQL InnoDB</div><div class="desc">Redo log plus doublewrite buffer; <code>innodb_flush_log_at_trx_commit</code> trades durability for commit throughput.</div></div>
+  <div class="use-case"><div class="label">SQLite</div><div class="desc"><code>PRAGMA journal_mode=WAL</code> appends to a -wal file and checkpoints back automatically at 1000 pages by default, letting readers run alongside a writer (<a href="https://www.sqlite.org/wal.html">SQLite docs</a>).</div></div>
+  <div class="use-case"><div class="label">LSM key-value stores</div><div class="desc">Writes hit a WAL before the memtable so unflushed data survives a crash; the log is dropped once the memtable becomes an SSTable.</div></div>
+  <div class="use-case"><div class="label">Replication &amp; CDC</div><div class="desc">Shipping the log is replication: replicas replay WAL, and change-data-capture tools tail it to publish row events.</div></div>
+  <div class="use-case"><div class="label">Consensus logs</div><div class="desc">Raft and similar protocols persist log entries before acknowledging them, the same log-before-ack rule applied across machines.</div></div>
+</div>
+
+<div class="callout"><strong>Design takeaway.</strong> When you need durable state, start with an append-only, checksummed log flushed on commit, plus periodic checkpoints. Decide explicitly how much recent data you can afford to lose (per-commit flush, group commit, or async commit), and treat a failed flush as a crash, not a retry.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li>C. Mohan, D. Haderle, B. Lindsay, H. Pirahesh, P. Schwarz. <a href="https://doi.org/10.1145/128765.128770">ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging</a>. ACM TODS 17(1), 1992.</li>
+  <li>C. Mohan. <a href="https://www.cs.cmu.edu/~natassa/courses/15-721/papers/p1-mohan.pdf">Repeating History Beyond ARIES</a>. VLDB 1999.</li>
+  <li><a href="https://people.eecs.berkeley.edu/~fox/summaries/database/aries.html">ARIES paper summary</a>, UC Berkeley.</li>
+  <li><a href="https://research.cs.wisc.edu/coral/minibase/logMgr/report/node2.html">ARIES Recovery</a>, Minibase log manager report, UW&ndash;Madison.</li>
+  <li>PostgreSQL Documentation: <a href="https://www.postgresql.org/docs/current/runtime-config-wal.html">Write Ahead Log settings</a>.</li>
+  <li>PostgreSQL Documentation: <a href="https://www.postgresql.org/docs/current/wal-configuration.html">WAL Configuration</a>.</li>
+  <li>PostgreSQL Documentation: <a href="https://www.postgresql.org/docs/current/wal-internals.html">WAL Internals</a>.</li>
+  <li>PostgreSQL Documentation: <a href="https://www.postgresql.org/docs/current/wal-reliability.html">Reliability</a>.</li>
+  <li>PostgreSQL Documentation: <a href="https://www.postgresql.org/docs/current/wal-async-commit.html">Asynchronous Commit</a>.</li>
+  <li>PostgreSQL Wiki: <a href="https://wiki.postgresql.org/wiki/Full_page_writes">Full page writes</a>.</li>
+  <li>PostgreSQL Wiki: <a href="https://wiki.postgresql.org/wiki/Fsync_Errors">Fsync Errors</a>.</li>
+  <li>LWN.net: <a href="https://lwn.net/Articles/752093/">PostgreSQL&rsquo;s handling of fsync() errors is unsafe and risks data loss</a> (2018).</li>
+  <li>LWN.net: <a href="https://lwn.net/Articles/752613/">Fixing error reporting&mdash;again</a> (2018).</li>
+  <li>MySQL Reference Manual: <a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-redo-log-buffer.html">InnoDB Log Buffer</a>.</li>
+  <li>MySQL Reference Manual: <a href="https://dev.mysql.com/doc/refman/26.10/en/innodb-doublewrite-buffer.html">Doublewrite Buffer</a>.</li>
+  <li>SQLite: <a href="https://www.sqlite.org/wal.html">Write-Ahead Logging</a>.</li>
+  <li>T. S. Pillai et al. <a href="https://www.usenix.org/conference/osdi14/technical-sessions/presentation/pillai">All File Systems Are Not Created Equal: On the Complexity of Crafting Crash-Consistent Applications</a>. OSDI 2014.</li>
+</ol>
+</div>
+
+</body>
+</html>

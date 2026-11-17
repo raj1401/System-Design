@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed ID Generation: Snowflake, Ticket Servers, and UUIDv7</title>
+<meta name="description" content="How large systems mint unique IDs without a single global counter: centralized ticket servers and segment allocation, Snowflake-style time plus worker plus sequence layouts, random UUIDv4, and time-ordered UUIDv7 and ULID, with the tradeoffs in index locality, hotspots, clock skew, and worker ID assignment.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Distributed ID Generation: Snowflake, Ticket Servers, and UUIDv7</h1>
+<p class="subtitle">Minting billions of unique, sortable keys without a single global counter in the way.</p>
+<p class="meta">November 17, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>On a single database, <code>AUTO_INCREMENT</code> hands you unique, ordered primary keys for free. Once data is sharded, replicated multi-leader, or moved between databases, that local counter breaks: two shards can both assign ID <code>42</code>. Flickr hit exactly this when sharding MySQL, noting that it <em>&ldquo;can&rsquo;t guarantee uniqueness across physical and logical databases&rdquo;</em> <a href="#ref1">[1]</a>.</p>
+<p>Every distributed ID scheme picks a point on three axes: <strong>coordination</strong> (does minting an ID need a network hop?), <strong>ordering</strong> (are IDs roughly time-sortable?), and <strong>size</strong> (64-bit integer vs 128-bit value). The main families are:</p>
+<ul style="margin: 0 0 16px 22px;">
+  <li><strong>Centralized allocators</strong> &mdash; ticket servers and segment (range) allocation.</li>
+  <li><strong>Coordination-free composite IDs</strong> &mdash; Snowflake: timestamp + worker ID + sequence in 64 bits.</li>
+  <li><strong>Random / time-ordered 128-bit IDs</strong> &mdash; UUIDv4, and the newer UUIDv7 / ULID.</li>
+</ul>
+
+<h2>Deeper Dive</h2>
+
+<h3>1. Ticket servers: one counter, made cheap</h3>
+<p>Flickr&rsquo;s ticket server is a dedicated MySQL box holding a one-row table per ID width. Each request runs <code>REPLACE INTO Tickets64 (stub) VALUES ('a'); SELECT LAST_INSERT_ID();</code>, atomically bumping the auto-increment while the table stays one row <a href="#ref1">[1]</a>. To avoid a single point of failure, they ran two servers and split the space by parity &mdash; one with <code>auto-increment-increment = 2, offset = 1</code> (odd IDs), the other offset 2 (even IDs) &mdash; and round-robin between them <a href="#ref1">[1]</a>. MySQL documents these variables as intended for circular (source-to-source) replication, with values from 1 to 65,535 <a href="#ref2">[2]</a>.</p>
+<p>The cost is a network round-trip per ID and only loose global ordering (the two servers drift apart). Meituan&rsquo;s <strong>Leaf</strong> removes the per-ID hop with <em>segment mode</em>: each service instance claims a whole range (<code>max_id</code> advanced by <code>step</code> in a <code>leaf_alloc</code> table) and serves IDs from memory <a href="#ref3">[3]</a>. A <strong>double buffer</strong> fetches the next segment asynchronously before the current one runs out, so the service keeps issuing IDs through a short database outage, and the step size is adapted to traffic so a segment lasts roughly 15&ndash;30 minutes <a href="#ref4">[4]</a>.</p>
+
+<div class="diagram-container">
+<h4>Segment allocation with a double buffer (Leaf-style)</h4>
+<svg width="740" height="250" viewBox="0 0 740 250" font-family="Inter,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8b90a0"/></marker>
+  </defs>
+  <rect x="20" y="85" width="150" height="80" rx="10" fill="#232733" stroke="#ffd93d"/>
+  <text x="95" y="115" fill="#ffd93d" font-size="14" text-anchor="middle" font-weight="600">MySQL</text>
+  <text x="95" y="135" fill="#e1e4ed" font-size="11" text-anchor="middle">leaf_alloc</text>
+  <text x="95" y="152" fill="#8b90a0" font-size="11" text-anchor="middle">max_id += step</text>
+  <rect x="270" y="30" width="230" height="190" rx="12" fill="#1a1d27" stroke="#6c8cff"/>
+  <text x="385" y="55" fill="#6c8cff" font-size="13" text-anchor="middle" font-weight="600">ID service instance (memory)</text>
+  <rect x="290" y="72" width="190" height="56" rx="8" fill="#232733" stroke="#4ecdc4"/>
+  <text x="385" y="95" fill="#4ecdc4" font-size="12" text-anchor="middle" font-weight="600">Buffer A (current)</text>
+  <text x="385" y="114" fill="#e1e4ed" font-size="11" text-anchor="middle">[10001 … 12000]  next=11804</text>
+  <rect x="290" y="145" width="190" height="56" rx="8" fill="#232733" stroke="#ff6b9d" stroke-dasharray="5 4"/>
+  <text x="385" y="168" fill="#ff6b9d" font-size="12" text-anchor="middle" font-weight="600">Buffer B (prefetching)</text>
+  <text x="385" y="187" fill="#e1e4ed" font-size="11" text-anchor="middle">[12001 … 14000]</text>
+  <line x1="170" y1="125" x2="288" y2="172" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="200" y="185" fill="#8b90a0" font-size="10">async load when A</text>
+  <text x="200" y="198" fill="#8b90a0" font-size="10">is partly consumed</text>
+  <rect x="590" y="85" width="130" height="80" rx="10" fill="#232733" stroke="#8b90a0"/>
+  <text x="655" y="118" fill="#e1e4ed" font-size="13" text-anchor="middle" font-weight="600">Callers</text>
+  <text x="655" y="138" fill="#8b90a0" font-size="11" text-anchor="middle">getId(biz_tag)</text>
+  <line x1="588" y1="125" x2="502" y2="100" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="545" y="240" fill="#8b90a0" font-size="11" text-anchor="middle">DB is off the hot path: one write per step IDs, not per ID</text>
+</svg>
+</div>
+
+<h3>2. Snowflake: pack time, machine, and sequence into 64 bits</h3>
+<p>When Twitter moved off MySQL toward Cassandra, which has no sequential ID facility, it built <strong>Snowflake</strong> and insisted on staying under 64 bits <a href="#ref5">[5]</a>. An ID is <strong>41 bits of milliseconds</strong> since a custom epoch (about 69 years), a <strong>10-bit configured machine ID</strong> (1,024 workers), and a <strong>12-bit sequence</strong> (4,096 IDs per worker per millisecond) <a href="#ref5">[5]</a>. The top bit stays 0 so the value fits a signed 64-bit integer <a href="#ref6">[6]</a>. No coordination is needed per ID &mdash; only once, to hand each worker a unique machine ID.</p>
+
+<div class="diagram-container">
+<h4>Snowflake 64-bit layout</h4>
+<svg width="740" height="170" viewBox="0 0 740 170" font-family="Inter,sans-serif">
+  <rect x="20" y="40" width="24" height="56" fill="#232733" stroke="#8b90a0"/>
+  <text x="32" y="73" fill="#8b90a0" font-size="12" text-anchor="middle">0</text>
+  <rect x="44" y="40" width="440" height="56" fill="#6c8cff33" stroke="#6c8cff"/>
+  <text x="264" y="65" fill="#6c8cff" font-size="14" text-anchor="middle" font-weight="600">timestamp — 41 bits</text>
+  <text x="264" y="85" fill="#e1e4ed" font-size="11" text-anchor="middle">ms since custom epoch (~69 years)</text>
+  <rect x="484" y="40" width="110" height="56" fill="#4ecdc433" stroke="#4ecdc4"/>
+  <text x="539" y="65" fill="#4ecdc4" font-size="13" text-anchor="middle" font-weight="600">worker — 10</text>
+  <text x="539" y="85" fill="#e1e4ed" font-size="11" text-anchor="middle">1,024 nodes</text>
+  <rect x="594" y="40" width="126" height="56" fill="#ff6b9d33" stroke="#ff6b9d"/>
+  <text x="657" y="65" fill="#ff6b9d" font-size="13" text-anchor="middle" font-weight="600">sequence — 12</text>
+  <text x="657" y="85" fill="#e1e4ed" font-size="11" text-anchor="middle">4,096 / ms</text>
+  <text x="20" y="28" fill="#8b90a0" font-size="11">bit 63</text>
+  <text x="720" y="28" fill="#8b90a0" font-size="11" text-anchor="end">bit 0</text>
+  <text x="370" y="128" fill="#ffd93d" font-size="12" text-anchor="middle">id = (now_ms − epoch) &lt;&lt; 22  |  worker &lt;&lt; 12  |  seq</text>
+  <text x="370" y="152" fill="#8b90a0" font-size="11" text-anchor="middle">Sorting by id ≈ sorting by creation time (k-ordered across workers)</text>
+</svg>
+</div>
+
+<p>Variants re-slice the same 64 bits. Instagram generates IDs inside Postgres with a PL/pgSQL function: 41 bits of time, <strong>13 bits of logical shard ID</strong>, and 10 bits of a per-table sequence mod 1024 &mdash; so the ID itself tells you which shard owns the row <a href="#ref7">[7]</a>. Discord uses its own epoch (the first second of 2015) and splits the machine field into 5-bit worker and 5-bit process IDs <a href="#ref8">[8]</a>.</p>
+
+<div class="callout"><strong>The clock is the hard part.</strong> Snowflake&rsquo;s uniqueness assumes time never runs backwards on a worker. The original service tells you to run NTP and <em>refuses to generate IDs</em> until the clock passes the last timestamp it used <a href="#ref5">[5]</a>. Leaf&rsquo;s implementation waits out a backward jump of up to 5 ms and returns an error for anything larger <a href="#ref9">[9]</a>. The other hard part is <strong>worker ID assignment</strong>: two nodes with the same ID will collide silently. Leaf leases worker IDs from ZooKeeper and caches them on local disk so a restart survives a ZooKeeper outage <a href="#ref4">[4]</a>.</div>
+
+<h3>3. UUIDs: zero coordination, 128 bits</h3>
+<p>A random UUIDv4 needs no coordination at all, but Flickr rejected GUIDs because <em>&ldquo;they are big, and they index badly in MySQL&rdquo;</em> <a href="#ref1">[1]</a>: random keys scatter inserts across a B-tree, destroying cache locality. <strong>RFC 9562</strong> (2024) fixes this with <strong>UUIDv7</strong>: a 48-bit big-endian Unix millisecond timestamp in the most significant bits, then version and variant bits, with the remaining 74 bits random &mdash; optionally replaced in part by a sub-millisecond fraction or a seeded counter for monotonicity within a millisecond <a href="#ref10">[10]</a>. The RFC says implementations should prefer v7 over the older time-based v1 and v6 <a href="#ref10">[10]</a>. <strong>ULID</strong> is the same idea predating the RFC: 48-bit timestamp plus 80 random bits, encoded as 26 Crockford Base32 characters that sort lexicographically <a href="#ref11">[11]</a>.</p>
+
+<div class="diagram-container">
+<h4>Where new keys land in a B-tree index</h4>
+<svg width="740" height="210" viewBox="0 0 740 210" font-family="Inter,sans-serif">
+  <text x="185" y="24" fill="#ff6b9d" font-size="13" text-anchor="middle" font-weight="600">UUIDv4 (random)</text>
+  <text x="555" y="24" fill="#4ecdc4" font-size="13" text-anchor="middle" font-weight="600">UUIDv7 / Snowflake (time-ordered)</text>
+  <g>
+    <rect x="30" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="96" y="50" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+    <rect x="162" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="228" y="50" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+    <rect x="294" y="50" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+    <rect x="30" y="94" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+    <rect x="96" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="162" y="94" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+    <rect x="228" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="294" y="94" width="56" height="34" rx="5" fill="#ff6b9d44" stroke="#ff6b9d"/>
+  </g>
+  <text x="190" y="155" fill="#e1e4ed" font-size="11" text-anchor="middle">Inserts hit random leaf pages</text>
+  <text x="190" y="173" fill="#8b90a0" font-size="11" text-anchor="middle">more page splits, larger working set</text>
+  <g>
+    <rect x="400" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="466" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="532" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="598" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="664" y="50" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="400" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="466" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="532" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="598" y="94" width="56" height="34" rx="5" fill="#232733" stroke="#8b90a0"/>
+    <rect x="664" y="94" width="56" height="34" rx="5" fill="#4ecdc444" stroke="#4ecdc4"/>
+  </g>
+  <text x="560" y="155" fill="#e1e4ed" font-size="11" text-anchor="middle">Inserts append to the rightmost page</text>
+  <text x="560" y="173" fill="#8b90a0" font-size="11" text-anchor="middle">great locality on one node — but a hotspot on range-sharded stores</text>
+  <line x1="370" y1="40" x2="370" y2="180" stroke="#2e3345"/>
+</svg>
+</div>
+
+<p>That right-hand panel has a catch. On range-partitioned distributed databases, a monotonically increasing key funnels every insert into the same split. Google&rsquo;s Spanner guidance explicitly warns against timestamp or auto-increment leading keys and recommends UUIDv4, a hashed/shard prefix, or a <code>bit_reversed_positive</code> sequence, which yields unique integers spread uniformly over the key space <a href="#ref12">[12]</a>. Locality is a feature on one B-tree and a bug across many ranges.</p>
+
+<div class="comparison">
+  <div class="comparison-card">
+    <h4 style="color:#6c8cff">Centralized (ticket / segment)</h4>
+    <ul>
+      <li>Dense, compact, near-sequential integers</li>
+      <li>Needs an allocator service and HA plan</li>
+      <li>Segments amortize the DB hop; gaps on restart</li>
+      <li>No clock dependency</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#4ecdc4">Snowflake-style (64-bit)</h4>
+    <ul>
+      <li>No per-ID coordination; fits a <code>BIGINT</code></li>
+      <li>k-sortable; creation time decodable from ID</li>
+      <li>Requires unique worker IDs and sane clocks</li>
+      <li>Leaks creation time and rough volume</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ff6b9d">UUIDv4 (random 128-bit)</h4>
+    <ul>
+      <li>Zero coordination, generate anywhere (even clients)</li>
+      <li>Poor B-tree locality; 2&times; size of a BIGINT</li>
+      <li>Naturally spreads writes on range-sharded stores</li>
+    </ul>
+  </div>
+  <div class="comparison-card">
+    <h4 style="color:#ffd93d">UUIDv7 / ULID (time-ordered 128-bit)</h4>
+    <ul>
+      <li>Zero coordination plus index-friendly ordering</li>
+      <li>Standardized in RFC 9562</li>
+      <li>Can hotspot range-partitioned leading keys</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+  <div class="use-case"><div class="label">X / Twitter</div><div class="desc">Snowflake IDs for tweets, users, DMs and more; the API returns string IDs too, because JavaScript numbers lose precision beyond 53 bits <a href="#ref13">[13]</a>.</div></div>
+  <div class="use-case"><div class="label">Instagram</div><div class="desc">Shard-aware 41/13/10 IDs generated by PL/pgSQL inside each logical-shard Postgres schema <a href="#ref7">[7]</a>.</div></div>
+  <div class="use-case"><div class="label">Flickr</div><div class="desc">Two odd/even MySQL ticket servers provide globally unique keys for a sharded, master-master MySQL fleet <a href="#ref1">[1]</a>.</div></div>
+  <div class="use-case"><div class="label">Meituan</div><div class="desc">Leaf offers segment and Snowflake modes as a shared ID service; its README reports ~50k QPS with 1 ms TP999 on a 4C8G VM <a href="#ref3">[3]</a>.</div></div>
+  <div class="use-case"><div class="label">Discord</div><div class="desc">Snowflakes with a 2015 epoch and worker/process subfields; timestamps can be decoded straight from any ID <a href="#ref8">[8]</a>.</div></div>
+  <div class="use-case"><div class="label">Google Spanner</div><div class="desc">Bit-reversed sequences give integer keys without the write hotspot of monotonic keys <a href="#ref12">[12]</a>.</div></div>
+</div>
+
+<div class="callout"><strong>Choosing quickly.</strong> Need a 64-bit, sortable key at high rate with a stable fleet? Snowflake. Need dense integers and already run a reliable DB? Segment allocation. Generating IDs offline or on clients, on a single-node or hash-partitioned store? UUIDv7. Range-partitioned store with heavy insert rates? Avoid a monotonic leading key &mdash; use random, hashed, or bit-reversed IDs.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+  <li id="ref1"><a href="https://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Flickr Engineering &mdash; Ticket Servers: Distributed Unique Primary Keys on the Cheap (2010)</a></li>
+  <li id="ref2"><a href="https://dev.mysql.com/doc/refman/8.4/en/replication-options-source.html">MySQL Reference Manual &mdash; Replication Source Options and Variables (auto_increment_increment / offset)</a></li>
+  <li id="ref3"><a href="https://github.com/Meituan-Dianping/Leaf">Meituan-Dianping/Leaf &mdash; Distributed ID generation service (GitHub README)</a></li>
+  <li id="ref4"><a href="https://tech.meituan.com/2019/03/07/open-source-project-leaf.html">Meituan Tech &mdash; Leaf: Meituan&rsquo;s distributed ID service open-sourced (2019, Chinese)</a></li>
+  <li id="ref5"><a href="https://github.com/twitter-archive/snowflake/tree/snowflake-2010">twitter-archive/snowflake (snowflake-2010 README)</a></li>
+  <li id="ref6"><a href="https://en.wikipedia.org/wiki/Snowflake_ID">Wikipedia &mdash; Snowflake ID</a></li>
+  <li id="ref7"><a href="https://instagram-engineering.com/sharding-ids-at-instagram-1cf5a71e5a5c">Instagram Engineering &mdash; Sharding &amp; IDs at Instagram</a></li>
+  <li id="ref8"><a href="https://discord.com/developers/docs/reference">Discord Developer Docs &mdash; API Reference: Snowflakes</a></li>
+  <li id="ref9"><a href="https://github.com/Meituan-Dianping/Leaf/blob/master/leaf-core/src/main/java/com/sankuai/inf/leaf/snowflake/SnowflakeIDGenImpl.java">Leaf &mdash; SnowflakeIDGenImpl.java (clock-rollback handling)</a></li>
+  <li id="ref10"><a href="https://www.rfc-editor.org/rfc/rfc9562.html">RFC 9562 &mdash; Universally Unique IDentifiers (UUIDs), Section 5.7 UUID Version 7</a></li>
+  <li id="ref11"><a href="https://github.com/ulid/spec">ULID specification (GitHub)</a></li>
+  <li id="ref12"><a href="https://docs.cloud.google.com/spanner/docs/schema-design">Google Cloud &mdash; Spanner schema design best practices</a></li>
+  <li id="ref13"><a href="https://groups.google.com/g/twitter-api-announce/c/ahbvo3VTIYI">Twitter API Announce &mdash; Snowflake: An update and some very important information (2010)</a></li>
+</ol>
+</div>
+</body>
+</html>

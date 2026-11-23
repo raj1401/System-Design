@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="How stream processors reason about time when data arrives late and out of order: event time vs processing time, watermarks as progress signals, tumbling, sliding and session windows, triggers, allowed lateness, and how Dataflow, Flink, Kafka Streams and Spark implement them.">
+<title>Stream Processing Time: Event Time, Watermarks, and Windowing</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">High-Level System Design</div>
+<h1>Stream Processing Time: Event Time, Watermarks, and Windowing</h1>
+<p class="subtitle">How an unbounded, out-of-order stream decides when an hour is actually over.</p>
+<p class="meta">November 23, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>A batch job gets to see all of its input before it answers. A streaming job never does: the data is <em>unbounded</em>, it arrives out of order, and some of it shows up minutes or days late — a phone that was offline on a flight, a partition that lagged, a retry storm <a href="#ref1">[1]</a><a href="#ref2">[2]</a>. To compute something like &ldquo;clicks per ad per minute&rdquo; correctly, a stream processor needs three ideas. <strong>Event time</strong> (when the thing happened) is distinguished from <strong>processing time</strong> (when the system saw it). <strong>Windows</strong> slice the infinite stream into finite, event-time buckets. And <strong>watermarks</strong> are a monotonically advancing signal that says &ldquo;event time has (probably) progressed to <em>t</em>,&rdquo; telling operators when a window can be emitted and its state discarded <a href="#ref3">[3]</a><a href="#ref4">[4]</a>.</p>
+
+<div class="callout"><strong>Key idea:</strong> You cannot know when an unbounded, out-of-order stream is &ldquo;complete.&rdquo; Watermarks turn that unknowable fact into an explicit, tunable tradeoff between <em>correctness</em> (wait longer for stragglers), <em>latency</em> (emit sooner), and <em>cost</em> (state you must keep around) <a href="#ref1">[1]</a>.</div>
+
+<h2>How It Works</h2>
+<h3>Two clocks: event time vs processing time</h3>
+<p>The Dataflow model defines <strong>event time</strong> as the time at which an event actually occurred, and <strong>processing time</strong> as the time at which it is observed at some point in the pipeline. An event&rsquo;s event time never changes; its processing time keeps moving as it flows through operators, and the gap between the two — <em>skew</em> — varies dynamically with network delay, scheduling, backlogs and outages <a href="#ref1">[1]</a>. Processing-time windows are simple and fast but not deterministic: an hourly processing-time window contains whatever happened to arrive that hour, and replaying the same data gives different answers <a href="#ref4">[4]</a>. Event-time windows give the same result regardless of arrival order or reprocessing — <em>if</em> you know when all the data has arrived.</p>
+
+<div class="diagram-container"><h4>Event time vs processing time skew</h4><svg width="700" height="330" viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ax" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker></defs>
+<line x1="70" y1="290" x2="660" y2="290" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ax)"/>
+<line x1="70" y1="290" x2="70" y2="25" stroke="#8b90a0" stroke-width="1.5" marker-end="url(#ax)"/>
+<text x="560" y="315" font-family="Inter,sans-serif" font-size="12" fill="#8b90a0">Event time</text>
+<text x="20" y="20" font-family="Inter,sans-serif" font-size="12" fill="#8b90a0">Processing time</text>
+<line x1="70" y1="290" x2="330" y2="30" stroke="#8b90a0" stroke-dasharray="5,5"/>
+<text x="250" y="70" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">ideal: zero skew</text>
+<path d="M70,290 C160,250 220,200 300,190 S430,120 520,80 S600,50 640,40" fill="none" stroke="#4ecdc4" stroke-width="2.5"/>
+<text x="520" y="110" font-family="Inter,sans-serif" font-size="12" fill="#4ecdc4" font-weight="600">watermark</text>
+<line x1="300" y1="190" x2="300" y2="110" stroke="#ffd93d" stroke-width="1.5" marker-end="url(#ax)"/>
+<text x="308" y="155" font-family="Inter,sans-serif" font-size="11" fill="#ffd93d">skew</text>
+<circle cx="150" cy="235" r="6" fill="#6c8cff"/>
+<circle cx="230" cy="160" r="6" fill="#6c8cff"/>
+<circle cx="360" cy="140" r="6" fill="#6c8cff"/>
+<circle cx="420" cy="115" r="6" fill="#6c8cff"/>
+<circle cx="250" cy="70" r="7" fill="#ff6b9d"/>
+<text x="140" y="60" font-family="Inter,sans-serif" font-size="11" fill="#ff6b9d">late event (below watermark</text>
+<text x="140" y="74" font-family="Inter,sans-serif" font-size="11" fill="#ff6b9d">when it finally arrives)</text>
+<circle cx="480" cy="270" r="6" fill="#6c8cff"/><text x="492" y="274" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">on-time event</text>
+<circle cx="480" cy="250" r="6" fill="#ff6b9d"/><text x="492" y="254" font-family="Inter,sans-serif" font-size="11" fill="#e1e4ed">late event</text>
+</svg></div>
+
+<h3>Windows: slicing the infinite stream</h3>
+<p>Windowing assigns each element to one or more finite buckets so aggregations and joins have boundaries <a href="#ref1">[1]</a>. The common shapes:</p>
+<ul style="margin:0 0 16px 22px">
+<li><strong>Tumbling (fixed)</strong> — non-overlapping, gap-less windows of size <em>S</em>; each record belongs to exactly one. Kafka Streams aligns them to the epoch as <code>[N·size, N·size + size)</code> <a href="#ref6">[6]</a>.</li>
+<li><strong>Sliding / hopping</strong> — size <em>S</em> advancing by period <em>P &lt; S</em>, so windows overlap and a record lands in <em>S/P</em> of them (e.g. &ldquo;last 10 minutes, updated every 5&rdquo;) <a href="#ref8">[8]</a>.</li>
+<li><strong>Session</strong> — per-key, data-driven windows that close after a gap of inactivity; they are <em>unaligned</em> and windows merge when a new event bridges two sessions <a href="#ref1">[1]</a><a href="#ref6">[6]</a>.</li>
+</ul>
+
+<div class="diagram-container"><h4>Tumbling, sliding and session windows</h4><svg width="700" height="270" viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg">
+<text x="20" y="45" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Tumbling</text>
+<rect x="120" y="25" width="140" height="34" rx="6" fill="#232733" stroke="#6c8cff"/>
+<rect x="265" y="25" width="140" height="34" rx="6" fill="#232733" stroke="#6c8cff"/>
+<rect x="410" y="25" width="140" height="34" rx="6" fill="#232733" stroke="#6c8cff"/>
+<rect x="555" y="25" width="125" height="34" rx="6" fill="#232733" stroke="#6c8cff"/>
+<text x="20" y="115" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Sliding</text>
+<rect x="120" y="85" width="200" height="22" rx="6" fill="#1a1d27" stroke="#4ecdc4"/>
+<rect x="220" y="112" width="200" height="22" rx="6" fill="#1a1d27" stroke="#4ecdc4"/>
+<rect x="320" y="85" width="200" height="22" rx="6" fill="#1a1d27" stroke="#4ecdc4"/>
+<rect x="420" y="112" width="200" height="22" rx="6" fill="#1a1d27" stroke="#4ecdc4"/>
+<rect x="520" y="85" width="160" height="22" rx="6" fill="#1a1d27" stroke="#4ecdc4"/>
+<text x="20" y="180" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed" font-weight="600">Session</text>
+<text x="20" y="196" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">(key A)</text>
+<rect x="130" y="160" width="150" height="34" rx="6" fill="#232733" stroke="#ff6b9d"/>
+<rect x="380" y="160" width="90" height="34" rx="6" fill="#232733" stroke="#ff6b9d"/>
+<rect x="560" y="160" width="110" height="34" rx="6" fill="#232733" stroke="#ff6b9d"/>
+<g fill="#ffd93d"><circle cx="145" cy="177" r="4"/><circle cx="185" cy="177" r="4"/><circle cx="230" cy="177" r="4"/><circle cx="265" cy="177" r="4"/><circle cx="395" cy="177" r="4"/><circle cx="455" cy="177" r="4"/><circle cx="575" cy="177" r="4"/><circle cx="655" cy="177" r="4"/></g>
+<text x="300" y="181" font-family="Inter,sans-serif" font-size="10" fill="#8b90a0">gap &gt; timeout</text>
+<line x1="120" y1="235" x2="680" y2="235" stroke="#8b90a0" marker-end="url(#ax)"/>
+<text x="600" y="258" font-family="Inter,sans-serif" font-size="12" fill="#8b90a0">event time</text>
+</svg></div>
+
+<h3>Watermarks: measuring progress in event time</h3>
+<p>A watermark is a timestamp <em>W</em> flowing through the pipeline that asserts no more records with event time &le; <em>W</em> are expected. When an operator&rsquo;s watermark passes the end of a window, it can fire the window and clean up its state <a href="#ref4">[4]</a>. Google&rsquo;s MillWheel gave a precise recursive definition: the low watermark of computation A is <code>min(oldest unfinished work in A, low watermarks of all upstream computations)</code>, seeded by the injectors that bring data in from external systems, and kept monotonic even when late data appears <a href="#ref3">[3]</a>. Flink similarly takes the minimum across an operator&rsquo;s input streams, which is why one silent partition can stall the whole job unless it is marked <em>idle</em> <a href="#ref4">[4]</a><a href="#ref5">[5]</a>.</p>
+<p>Watermarks come in two flavours <a href="#ref2">[2]</a>. A <strong>perfect</strong> watermark is possible only when you fully know the input (e.g. ordered log files). Most are <strong>heuristic</strong>: the commonest is &ldquo;bounded out-of-orderness,&rdquo; <code>W = max event time seen − allowed delay</code>. Flink exposes this as <code>WatermarkStrategy.forBoundedOutOfOrderness(...)</code> <a href="#ref5">[5]</a>; Spark Structured Streaming&rsquo;s <code>withWatermark(&quot;ts&quot;, &quot;10 minutes&quot;)</code> computes max event time across partitions minus the threshold <a href="#ref8">[8]</a><a href="#ref9">[9]</a>. A heuristic watermark can be <em>too slow</em> (adding latency) or <em>too fast</em> (declaring data late that was merely delayed) <a href="#ref1">[1]</a>.</p>
+
+<div class="diagram-container"><h4>A watermark closing a 12:00–12:10 window</h4><svg width="700" height="230" viewBox="0 0 700 230" xmlns="http://www.w3.org/2000/svg">
+<rect x="40" y="30" width="620" height="60" rx="8" fill="#1a1d27" stroke="#2e3345"/>
+<text x="50" y="22" font-family="Inter,sans-serif" font-size="11" fill="#8b90a0">arrival order (processing time) &#8594;</text>
+<g font-family="Inter,sans-serif" font-size="11" text-anchor="middle">
+<rect x="60" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#6c8cff"/><text x="95" y="64" fill="#e1e4ed">12:03</text>
+<rect x="145" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#6c8cff"/><text x="180" y="64" fill="#e1e4ed">12:07</text>
+<rect x="230" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#6c8cff"/><text x="265" y="64" fill="#e1e4ed">12:14</text>
+<rect x="315" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#4ecdc4"/><text x="350" y="64" fill="#4ecdc4">12:09</text>
+<rect x="400" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#6c8cff"/><text x="435" y="64" fill="#e1e4ed">12:21</text>
+<rect x="485" y="45" width="70" height="30" rx="6" fill="#232733" stroke="#ff6b9d"/><text x="520" y="64" fill="#ff6b9d">12:04</text>
+</g>
+<g font-family="Inter,sans-serif" font-size="11" text-anchor="middle" fill="#ffd93d">
+<text x="265" y="110">W = 12:04</text>
+<text x="350" y="110">W = 12:04</text>
+<text x="435" y="110">W = 12:11</text>
+</g>
+<line x1="472" y1="30" x2="472" y2="150" stroke="#ffd93d" stroke-dasharray="4,4"/>
+<text x="478" y="145" font-family="Inter,sans-serif" font-size="11" fill="#ffd93d">window [12:00,12:10) fires</text>
+<text x="50" y="180" font-family="Inter,sans-serif" font-size="12" fill="#e1e4ed">Watermark = max event time &#8722; 10 min.</text>
+<text x="50" y="198" font-family="Inter,sans-serif" font-size="12" fill="#4ecdc4">12:09 arrives out of order but ahead of W: counted.</text>
+<text x="50" y="216" font-family="Inter,sans-serif" font-size="12" fill="#ff6b9d">12:04 arrives after W passed 12:10: too late, dropped (or sent to a side output).</text>
+</svg></div>
+
+<h3>Triggers, panes and allowed lateness</h3>
+<p>The Dataflow model separates <em>what</em> is computed (the transform), <em>where</em> in event time (windowing), <em>when</em> in processing time results are emitted (<strong>triggers</strong>) and <em>how</em> successive results relate (<strong>accumulation mode</strong>) <a href="#ref1">[1]</a><a href="#ref2">[2]</a>. A typical trigger emits a speculative early result every minute, an on-time result when the watermark passes the window end, and a late &ldquo;pane&rdquo; for each straggler. Panes can be <em>discarding</em> (each pane carries only new data — good when the sink sums), <em>accumulating</em> (each pane is the full value so far — good when the sink overwrites), or accumulating-and-retracting <a href="#ref1">[1]</a><a href="#ref10">[10]</a>.</p>
+<p><strong>Allowed lateness</strong> bounds how long a window&rsquo;s state is kept after the watermark passes its end. Beam&rsquo;s <code>withAllowedLateness</code>, Flink&rsquo;s <code>allowedLateness</code> <a href="#ref7">[7]</a> and Kafka Streams&rsquo; <strong>grace period</strong> all play this role. Kafka Streams has no separate watermark; instead it tracks <em>stream time</em> (the largest timestamp seen) and drops a record once stream time exceeds <code>windowEnd + grace</code>. <code>TimeWindows.ofSizeWithNoGrace</code> sets grace to zero, so any out-of-order record that arrives after the window ends is dropped <a href="#ref6">[6]</a><a href="#ref11">[11]</a>.</p>
+
+<div class="comparison">
+<div class="comparison-card"><h4 style="color:#4ecdc4">Short delay / grace</h4><ul>
+<li>Results emitted sooner</li>
+<li>Less window state in memory</li>
+<li>More events dropped as late</li>
+<li>Good for alerting and dashboards</li>
+</ul></div>
+<div class="comparison-card"><h4 style="color:#ff6b9d">Long delay / grace</h4><ul>
+<li>Higher completeness and correctness</li>
+<li>Higher end-to-end latency</li>
+<li>Larger state and checkpoints</li>
+<li>Good for billing and reporting</li>
+</ul></div>
+</div>
+
+<div class="callout"><strong>Design tip:</strong> Never silently drop late data. Count it (MillWheel&rsquo;s Zeitgeist pipeline dropped late records but tracked them, roughly 0.001% <a href="#ref3">[3]</a>), route it to a side output, or let downstream stores accept corrections. Spark exposes <code>numRowsDroppedByWatermark</code> in query progress for exactly this reason <a href="#ref8">[8]</a>.</div>
+
+<h2>Real-World Use Cases</h2>
+<div class="use-case-grid">
+<div class="use-case"><div class="label">Anomaly detection</div><div class="desc">Google&rsquo;s Zeitgeist used MillWheel low watermarks to tell whether a dip in search queries was real or just data delayed on the wire <a href="#ref3">[3]</a>.</div></div>
+<div class="use-case"><div class="label">Ad and video analytics</div><div class="desc">The Dataflow paper is motivated by billing and video-session analysis on unbounded, out-of-order logs, using session windows and late-firing triggers <a href="#ref1">[1]</a>.</div></div>
+<div class="use-case"><div class="label">Real-time metrics</div><div class="desc">Flink and Spark jobs compute per-minute tumbling or sliding aggregates with bounded-out-of-orderness watermarks and allowed lateness <a href="#ref5">[5]</a><a href="#ref8">[8]</a>.</div></div>
+<div class="use-case"><div class="label">Kafka-native services</div><div class="desc">Kafka Streams apps use windowed aggregations and joins with grace periods, plus session windows for per-user activity <a href="#ref6">[6]</a><a href="#ref11">[11]</a>.</div></div>
+<div class="use-case"><div class="label">Mobile and IoT telemetry</div><div class="desc">Devices buffer events offline and upload them later, so event-time windows and lateness policies keep aggregates correct <a href="#ref1">[1]</a>.</div></div>
+<div class="use-case"><div class="label">Backfills and replays</div><div class="desc">Because event-time results do not depend on arrival speed, the same pipeline can reprocess history and produce the same answers <a href="#ref4">[4]</a>.</div></div>
+</div>
+
+<h2>Takeaways</h2>
+<p>Pick event time whenever results must be reproducible. Choose the window shape from the question (fixed periods, rolling averages, or user sessions). Then set the watermark delay and allowed lateness explicitly, since together they decide your latency, completeness and state cost. Finally, plan for late data, because heuristic watermarks will sometimes be wrong <a href="#ref1">[1]</a><a href="#ref2">[2]</a>.</p>
+
+<div class="sources"><h2>References</h2><ol>
+<li id="ref1">Akidau et al., &ldquo;The Dataflow Model: A Practical Approach to Balancing Correctness, Latency, and Cost in Massive-Scale, Unbounded, Out-of-Order Data Processing,&rdquo; PVLDB 8(12), 2015. <a href="https://www.vldb.org/pvldb/vol8/p1792-Akidau.pdf">https://www.vldb.org/pvldb/vol8/p1792-Akidau.pdf</a></li>
+<li id="ref2">Tyler Akidau, &ldquo;Streaming 101&rdquo; and &ldquo;Streaming 102: The world beyond batch,&rdquo; O&rsquo;Reilly Radar. <a href="https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/">https://www.oreilly.com/radar/the-world-beyond-batch-streaming-101/</a> · <a href="https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/">https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/</a></li>
+<li id="ref3">Akidau et al., &ldquo;MillWheel: Fault-Tolerant Stream Processing at Internet Scale,&rdquo; PVLDB 6(11), 2013. <a href="https://www.vldb.org/pvldb/vol6/p1033-akidau.pdf">https://www.vldb.org/pvldb/vol6/p1033-akidau.pdf</a></li>
+<li id="ref4">Apache Flink Documentation — Timely Stream Processing. <a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/time/">https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/time/</a></li>
+<li id="ref5">Apache Flink Documentation — Generating Watermarks and Builtin Watermark Generators. <a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/event-time/generating_watermarks/">https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/event-time/generating_watermarks/</a> · <a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/event-time/built_in/">https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/event-time/built_in/</a></li>
+<li id="ref6">Apache Kafka — Streams DSL (windowing). <a href="https://kafka.apache.org/42/streams/developer-guide/dsl-api/">https://kafka.apache.org/42/streams/developer-guide/dsl-api/</a></li>
+<li id="ref7">Apache Flink Documentation — Windows. <a href="https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/operators/windows/">https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/operators/windows/</a></li>
+<li id="ref8">Apache Spark — Structured Streaming Programming Guide (Handling Late Data and Watermarking). <a href="https://spark.apache.org/docs/latest/streaming/apis-on-dataframes-and-datasets.html">https://spark.apache.org/docs/latest/streaming/apis-on-dataframes-and-datasets.html</a></li>
+<li id="ref9">PySpark API — DataFrame.withWatermark. <a href="https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.withWatermark.html">https://spark.apache.org/docs/latest/api/python/reference/pyspark.sql/api/pyspark.sql.DataFrame.withWatermark.html</a></li>
+<li id="ref10">Apache Beam — Window (Javadoc: triggers, accumulation modes, allowed lateness). <a href="https://beam.apache.org/releases/javadoc/current/org/apache/beam/sdk/transforms/windowing/Window.html">https://beam.apache.org/releases/javadoc/current/org/apache/beam/sdk/transforms/windowing/Window.html</a></li>
+<li id="ref11">Apache Kafka — Streams Core Concepts (windowing and grace period) and TimeWindows Javadoc. <a href="https://kafka.apache.org/44/streams/core-concepts/">https://kafka.apache.org/44/streams/core-concepts/</a> · <a href="https://kafka.apache.org/42/javadoc/org/apache/kafka/streams/kstream/TimeWindows.html">https://kafka.apache.org/42/javadoc/org/apache/kafka/streams/kstream/TimeWindows.html</a></li>
+</ol></div>
+</body>
+</html>

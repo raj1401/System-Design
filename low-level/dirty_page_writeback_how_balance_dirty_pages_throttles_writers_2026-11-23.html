@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dirty Page Writeback: How balance_dirty_pages() Throttles Writers</title>
+<meta name="description" content="How Linux buffers writes as dirty page cache, flushes them with per-device writeback threads, and uses the IO-less balance_dirty_pages() feedback loop to pace writers to the real bandwidth of each backing device.">
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232733;
+    --border: #2e3345;
+    --text: #e1e4ed;
+    --text-dim: #8b90a0;
+    --accent: #6c8cff;
+    --accent2: #4ecdc4;
+    --accent3: #ff6b9d;
+    --accent4: #ffd93d;
+    --code-bg: #141620;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+  .badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #6c8cff22, #4ecdc422);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-size: 2.2em;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .meta {
+    color: var(--text-dim);
+    font-size: 0.85em;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.35em;
+    font-weight: 600;
+    margin-top: 40px;
+    margin-bottom: 16px;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1em;
+    font-weight: 600;
+    margin-top: 28px;
+    margin-bottom: 10px;
+    color: var(--accent2);
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .callout {
+    background: var(--surface);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 24px 0;
+    font-size: 0.95em;
+  }
+  .callout strong { color: var(--accent); }
+
+  .diagram-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 20px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-container h4 {
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+    text-align: center;
+  }
+  .diagram-container svg { display: block; margin: 0 auto; }
+
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .comparison-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .comparison-card h4 {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 10px;
+  }
+  .comparison-card ul {
+    list-style: none;
+    padding: 0;
+  }
+  .comparison-card li {
+    font-size: 0.88em;
+    color: var(--text-dim);
+    padding: 4px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+  .comparison-card li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--accent2);
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .use-case {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .use-case .label {
+    font-size: 0.78em;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--accent3);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .use-case .desc {
+    font-size: 0.88em;
+    color: var(--text-dim);
+  }
+
+  code {
+    background: var(--code-bg);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.88em;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color: var(--accent2);
+  }
+
+  .sources {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .sources h2 { color: var(--text-dim); font-size: 1em; margin-top: 0; }
+  .sources ol {
+    padding-left: 20px;
+    color: var(--text-dim);
+    font-size: 0.85em;
+  }
+  .sources li { margin-bottom: 6px; }
+
+  @media (max-width: 600px) {
+    .comparison, .use-case-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6em; }
+  }
+</style>
+</head>
+<body>
+<div class="badge">Low-Level System Design</div>
+<h1>Dirty Page Writeback: How balance_dirty_pages() Throttles Writers</h1>
+<p class="subtitle">A feedback controller hidden inside every buffered write(): pacing producers of dirty memory to the speed of the disk.</p>
+<p class="meta">November 23, 2026 &middot; 5 min read</p>
+
+<h2>Summary</h2>
+<p>On Linux, a buffered <code>write()</code> almost never touches the disk. It copies bytes into the page cache, marks those pages <em>dirty</em>, and returns. Later, kernel flusher threads write the dirty pages back to storage. This write-back caching lets the kernel merge small writes, let filesystems choose better on-disk layout, and skip I/O entirely for short-lived temporary files.</p>
+<p>The catch is that memory fills up far faster than a disk drains. If nothing slowed producers down, a single <code>dd</code> to a USB stick could fill RAM with gigabytes of data that take minutes to flush. Linux handles this with two thresholds, <code>dirty_background_ratio</code> (default 10%) and <code>dirty_ratio</code> (default 20%) <a href="https://docs.kernel.org/admin-guide/sysctl/vm.html">[1]</a><a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">[2]</a>, and with <code>balance_dirty_pages()</code>. Since Linux 3.2, that function has been a control loop. It puts writing tasks to sleep for computed pauses, so each one dirties pages at roughly the rate the device can clean them <a href="https://lwn.net/Articles/456904/">[3]</a><a href="https://kernelnewbies.org/Linux_3.2/">[4]</a>.</p>
+
+<div class="callout"><strong>Key idea:</strong> the writer never does the I/O itself. It only <em>sleeps</em>. The flusher thread owns all writeback I/O, which keeps the I/O sequential and the disk busy, while the sleep time paces the writer like a token bucket that refills at the disk's bandwidth.</div>
+
+<h2>Deep dive: the moving parts</h2>
+
+<h3>1. Dirtying and the two thresholds</h3>
+<p>Pages get dirtied by buffered writes and by stores to shared file mappings. The kernel compares the dirty-plus-writeback count against limits computed from <em>dirtyable</em> memory (free plus reclaimable pages, not total RAM) <a href="https://docs.kernel.org/admin-guide/sysctl/vm.html">[1]</a>:</p>
+<ul style="margin:0 0 16px 22px">
+<li><code>bg_thresh</code> comes from <code>dirty_background_ratio</code> or <code>_bytes</code>. Above it, flusher threads start background writeback.</li>
+<li><code>thresh</code> comes from <code>dirty_ratio</code> or <code>_bytes</code>. Above it, the process generating writes is throttled.</li>
+<li><code>dirty_expire_centisecs</code> (default 3000, so 30 s) is the age at which dirty data becomes eligible for writeout. <code>dirty_writeback_centisecs</code> (default 500, so 5 s) is the periodic flusher wakeup interval <a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">[2]</a>.</li>
+</ul>
+<p>The <code>_bytes</code> and <code>_ratio</code> forms are mutually exclusive. Whichever you write last takes effect, and the other reads as 0 <a href="https://docs.kernel.org/admin-guide/sysctl/vm.html">[1]</a><a href="https://lwn.net/Articles/572911/">[5]</a>. The byte variants were added in 2008 because percentage limits got enormous on large-memory machines <a href="https://lists.openwall.net/linux-kernel/2008/11/23/192">[6]</a>.</p>
+
+<h3>2. Per-device flusher threads</h3>
+<p>Until 2.6.32, a shared pool of 2 to 8 <code>pdflush</code> threads served every disk. They had to use non-blocking writeback and could get starved when a request queue was congested. Jens Axboe replaced them with flushers bound to each <em>backing device</em> (<code>backing_dev_info</code>, or BDI). The dirty-inode lists moved from the superblock to the BDI, and a flusher can now block on its own queue without hurting other devices <a href="https://lwn.net/Articles/326552/">[7]</a>. A <code>struct writeback_control</code> describes each pass: <code>WB_SYNC_NONE</code> for background work or <code>WB_SYNC_ALL</code> for data-integrity sync, plus <code>nr_to_write</code> <a href="https://lwn.net/Articles/326552/">[7]</a>. In today's kernels this work runs as <code>bdi_writeback</code> (<code>wb</code>) work items on kworkers. With cgroup writeback there is one <code>wb</code> per (BDI, memory cgroup) pair.</p>
+
+<h3>3. IO-less balance_dirty_pages()</h3>
+<p>Before 3.2, a task over the limit was made to write pages back <em>itself</em>. With many such tasks, the disk saw several interleaved streams, and the resulting seeks cut bandwidth exactly when it mattered most. Pauses were also bumpy, from hundreds of milliseconds to seconds <a href="https://lwn.net/Articles/456904/">[3]</a><a href="https://lkml.iu.edu/1104.2/00063.html">[8]</a>. Fengguang Wu's IO-less throttling series replaced this with a rate controller <a href="https://lwn.net/Articles/461410/">[9]</a>. The pseudo-code from the patch describes it well <a href="https://lkml.iu.edu/1104.2/00063.html">[8]</a>:</p>
+<div class="callout"><code>task_ratelimit = dirty_ratelimit * pos_ratio</code><br><code>pause = pages_dirtied / task_ratelimit; sleep(pause)</code><br>Every ~200 ms: <code>ref = dirty_ratelimit * pos_ratio * write_bw / dirty_rate</code>, and <code>dirty_ratelimit</code> steps toward <code>ref</code>.</div>
+<p>The controller has two halves:</p>
+<ul style="margin:0 0 16px 22px">
+<li><strong>Rate estimation.</strong> If N tasks write to a disk with bandwidth <code>write_bw</code>, each one should get about <code>write_bw / N</code>. The kernel does not know N, so it measures the device's average write bandwidth and the observed dirty rate. It then nudges <code>wb-&gt;dirty_ratelimit</code> toward the balanced value every <code>BANDWIDTH_INTERVAL</code> (HZ/5, which is 200 ms) <a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">[2]</a><a href="https://lkml.iu.edu/1104.2/00063.html">[8]</a>.</li>
+<li><strong>Position control.</strong> <code>pos_ratio</code> scales the rate up or down depending on how far the dirty count sits from a <em>setpoint</em>. Globally, <code>freerun = (thresh + bg_thresh)/2</code> and <code>setpoint = (freerun + limit)/2</code>. The control line is the cubic <code>f = 1 + ((setpoint - dirty)/(limit - setpoint))<sup>3</sup></code>. It is built so that <code>f(freerun)=2</code>, <code>f(setpoint)=1</code>, and <code>f(limit)=0</code>. That gives a fast response to large errors and little oscillation near the setpoint <a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">[2]</a>. A second, per-wb control line takes the device's own setpoint into account, and the stricter of the two wins <a href="https://lwn.net/Articles/456904/">[3]</a>.</li>
+</ul>
+<p>Below the freerun ceiling, tasks are not throttled at all. To keep the hot path cheap, a task only enters <code>balance_dirty_pages()</code> after dirtying <code>current-&gt;nr_dirtied_pause</code> pages. That interval grows roughly with the square root of the remaining headroom, so large NUMA machines do not hammer global counters. A pause is capped at <code>MAX_PAUSE</code> (200 ms) and taken as a killable <code>io_schedule_timeout()</code>, which is why <code>killall dd</code> now takes effect immediately <a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">[2]</a><a href="https://kernelnewbies.org/Linux_3.2/">[4]</a>.</p>
+
+<div class="diagram-container"><h4>The writeback pipeline and its feedback loop</h4>
+<svg viewBox="0 0 720 330" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+<defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b90a0"/></marker>
+<marker id="arp" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff6b9d"/></marker></defs>
+<rect x="20" y="40" width="130" height="70" rx="8" fill="#232733" stroke="#6c8cff"/>
+<text x="85" y="68" fill="#e1e4ed" font-size="13" text-anchor="middle">Writer task</text>
+<text x="85" y="88" fill="#8b90a0" font-size="11" text-anchor="middle">write() / mmap store</text>
+<rect x="200" y="40" width="160" height="70" rx="8" fill="#232733" stroke="#4ecdc4"/>
+<text x="280" y="64" fill="#e1e4ed" font-size="13" text-anchor="middle">Page cache</text>
+<text x="280" y="84" fill="#8b90a0" font-size="11" text-anchor="middle">folios marked dirty</text>
+<text x="280" y="100" fill="#8b90a0" font-size="11" text-anchor="middle">per-wb dirty counters</text>
+<rect x="410" y="40" width="140" height="70" rx="8" fill="#232733" stroke="#ffd93d"/>
+<text x="480" y="64" fill="#e1e4ed" font-size="13" text-anchor="middle">Flusher (wb)</text>
+<text x="480" y="84" fill="#8b90a0" font-size="11" text-anchor="middle">kworker per BDI</text>
+<text x="480" y="100" fill="#8b90a0" font-size="11" text-anchor="middle">(x memcg)</text>
+<rect x="590" y="40" width="110" height="70" rx="8" fill="#232733" stroke="#8b90a0"/>
+<text x="645" y="64" fill="#e1e4ed" font-size="13" text-anchor="middle">Block layer</text>
+<text x="645" y="84" fill="#8b90a0" font-size="11" text-anchor="middle">wbt, I/O sched</text>
+<text x="645" y="100" fill="#8b90a0" font-size="11" text-anchor="middle">→ device</text>
+<line x1="150" y1="75" x2="198" y2="75" stroke="#8b90a0" stroke-width="2" marker-end="url(#ar)"/>
+<line x1="360" y1="75" x2="408" y2="75" stroke="#8b90a0" stroke-width="2" marker-end="url(#ar)"/>
+<line x1="550" y1="75" x2="588" y2="75" stroke="#8b90a0" stroke-width="2" marker-end="url(#ar)"/>
+<text x="384" y="30" fill="#8b90a0" font-size="10" text-anchor="middle">&gt; bg_thresh or</text>
+<text x="384" y="18" fill="#8b90a0" font-size="10" text-anchor="middle">age &gt; 30 s, sync</text>
+<rect x="200" y="170" width="320" height="80" rx="8" fill="#1a1d27" stroke="#ff6b9d"/>
+<text x="360" y="194" fill="#ff6b9d" font-size="13" text-anchor="middle" font-weight="600">balance_dirty_pages()</text>
+<text x="360" y="214" fill="#e1e4ed" font-size="11" text-anchor="middle">task_ratelimit = dirty_ratelimit × pos_ratio</text>
+<text x="360" y="232" fill="#e1e4ed" font-size="11" text-anchor="middle">pause = pages_dirtied / task_ratelimit (≤ 200 ms)</text>
+<line x1="85" y1="110" x2="85" y2="210" stroke="#ff6b9d" stroke-width="1.5"/>
+<line x1="85" y1="210" x2="198" y2="210" stroke="#ff6b9d" stroke-width="1.5" marker-end="url(#arp)"/>
+<text x="92" y="160" fill="#ff6b9d" font-size="10">every nr_dirtied_pause</text>
+<text x="92" y="173" fill="#ff6b9d" font-size="10">pages</text>
+<path d="M200,240 L60,240 L60,112" fill="none" stroke="#ff6b9d" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arp)"/>
+<text x="68" y="262" fill="#ff6b9d" font-size="10">sleep (TASK_KILLABLE), no I/O</text>
+<path d="M480,110 L480,165" fill="none" stroke="#ffd93d" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ar)"/>
+<text x="490" y="140" fill="#ffd93d" font-size="10">write_bw estimate</text>
+<text x="490" y="153" fill="#ffd93d" font-size="10">every 200 ms</text>
+<text x="360" y="300" fill="#8b90a0" font-size="11" text-anchor="middle">Writers only sleep; the flusher alone issues writeback I/O, so the disk sees large, mostly sequential streams.</text>
+</svg></div>
+
+<div class="diagram-container"><h4>Global position-control line (defaults: bg 10%, thresh 20%)</h4>
+<svg viewBox="0 0 620 300" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="Inter,sans-serif">
+<line x1="60" y1="230" x2="570" y2="230" stroke="#8b90a0"/>
+<line x1="60" y1="230" x2="60" y2="50" stroke="#8b90a0"/>
+<text x="20" y="74" fill="#8b90a0" font-size="11">2.0</text>
+<text x="20" y="154" fill="#8b90a0" font-size="11">1.0</text>
+<text x="28" y="234" fill="#8b90a0" font-size="11">0</text>
+<line x1="60" y1="150" x2="570" y2="150" stroke="#2e3345" stroke-dasharray="3,3"/>
+<line x1="60" y1="70" x2="570" y2="70" stroke="#2e3345" stroke-dasharray="3,3"/>
+<line x1="60" y1="70" x2="298" y2="70" stroke="#4ecdc4" stroke-width="2" stroke-dasharray="6,4"/>
+<text x="120" y="60" fill="#4ecdc4" font-size="11">free run: no throttling</text>
+<polyline fill="none" stroke="#6c8cff" stroke-width="3" points="298.1,70.0 302.9,79.2 307.6,87.7 312.4,95.5 317.1,102.6 321.9,109.0 326.7,114.9 331.4,120.1 336.2,124.8 341.0,129.0 345.7,132.7 350.5,136.0 355.2,138.8 360.0,141.2 364.8,143.2 369.5,144.9 374.3,146.3 379.0,147.4 383.8,148.2 388.6,148.9 393.3,149.4 398.1,149.7 402.9,149.9 407.6,150.0 412.4,150.0 417.1,150.0 421.9,150.0 426.7,150.0 431.4,150.1 436.2,150.3 441.0,150.6 445.7,151.1 450.5,151.8 455.2,152.6 460.0,153.7 464.8,155.1 469.5,156.8 474.3,158.8 479.0,161.2 483.8,164.0 488.6,167.3 493.3,171.0 498.1,175.2 502.9,179.9 507.6,185.1 512.4,191.0 517.1,197.4 521.9,204.5 526.7,212.3 531.4,220.8 536.2,230.0"/>
+<line x1="60" y1="230" x2="60" y2="240" stroke="#ffd93d"/><text x="60" y="254" fill="#ffd93d" font-size="11" text-anchor="middle">bg_thresh 10%</text>
+<text x="60" y="270" fill="#8b90a0" font-size="10" text-anchor="middle">flushers start</text>
+<line x1="298" y1="230" x2="298" y2="240" stroke="#4ecdc4"/><text x="298" y="254" fill="#4ecdc4" font-size="11" text-anchor="middle">freerun 15%</text>
+<line x1="417" y1="230" x2="417" y2="240" stroke="#6c8cff"/><text x="417" y="254" fill="#6c8cff" font-size="11" text-anchor="middle">setpoint 17.5%</text>
+<line x1="536" y1="230" x2="536" y2="240" stroke="#ff6b9d"/><text x="536" y="254" fill="#ff6b9d" font-size="11" text-anchor="middle">limit 20%</text>
+<circle cx="417" cy="150" r="5" fill="#6c8cff"/>
+<text x="425" y="140" fill="#e1e4ed" font-size="11">balance: pos_ratio = 1</text>
+<text x="440" y="205" fill="#ff6b9d" font-size="11" text-anchor="end">→ 0: writers blocked</text>
+<text x="310" y="290" fill="#8b90a0" font-size="11" text-anchor="middle">dirty + writeback pages (% of dirtyable memory) → pos_ratio scales each task's rate</text>
+</svg></div>
+
+<h3>4. Per-device shares, strictlimit, and cgroups</h3>
+<p>The global limit is divided among BDIs according to each device's recent share of completed writeout. Slow devices therefore cannot hold most of the dirty cache, and fast ones get more room. Admins can override the split in <code>/sys/class/bdi/&lt;dev&gt;/</code> with <code>min_ratio</code>, <code>max_ratio</code>, <code>max_bytes</code> (plus the <code>_fine</code> variants, in parts per million) and <code>strict_limit</code>. <code>strict_limit</code> enforces a device's share even before the global background limit is reached, which helps with slow or untrusted devices such as FUSE, NFS, or nbd <a href="https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-bdi">[10]</a>. With cgroup v2, the memory controller defines a second dirty domain whose limits come from the cgroup's memory limit. Both the system-wide and per-cgroup states are checked, and the stricter one is enforced. Writeback I/O is charged per inode to the owning cgroup on ext2, ext4, btrfs, f2fs and xfs <a href="https://docs.kernel.org/admin-guide/cgroup-v2.html">[11]</a>.</p>
+
+<div class="comparison">
+<div class="comparison-card"><h4 style="color:#ff6b9d">Before 3.2: direct writeback</h4><ul>
+<li>A task over the limit writes pages back itself</li>
+<li>Many writers produce interleaved, seeky I/O</li>
+<li>Pauses vary from hundreds of ms to seconds</li>
+<li>Lock contention and cache bouncing on big boxes</li></ul></div>
+<div class="comparison-card"><h4 style="color:#4ecdc4">3.2+: IO-less throttling</h4><ul>
+<li>A task over its rate sleeps for a computed pause</li>
+<li>Only the flusher issues I/O, so streams stay sequential</li>
+<li>Smooth pauses (≤ 200 ms) sized to device bandwidth</li>
+<li>Per-device and per-cgroup setpoints</li></ul></div>
+</div>
+
+<h3>5. Below the page cache: writeback throttling (wbt)</h3>
+<p><code>balance_dirty_pages()</code> limits how much dirty data exists. It does not limit how much of that data is queued in the block layer at once. Thousands of queued background writes put a foreground read at the back of a long line, which is a storage version of bufferbloat <a href="https://lwn.net/Articles/682582/">[12]</a>. Axboe's <code>blk-wbt</code>, inspired by CoDel, limits in-flight buffered writeback per device. It shrinks the allowed queue depth when minimum read latency in a window exceeds <code>wb_lat_usec</code>, which defaults to 2 ms for SSDs and 75 ms for rotational disks <a href="https://github.com/torvalds/linux/commit/87760e5eef359788047d6fd54fc12eec74ce0d27">[13]</a><a href="https://github.com/torvalds/linux/blob/master/block/blk-wbt.c">[14]</a>.</p>
+
+<h2>Real-world use cases</h2>
+<div class="use-case-grid">
+<div class="use-case"><div class="label">USB sticks and slow media</div><div class="desc">Percentage limits on a large-RAM 64-bit machine can let gigabytes pile up for a slow stick, so <code>sync</code> or unmount stalls for minutes. Setting <code>dirty_bytes</code>/<code>dirty_background_bytes</code> or a BDI <code>max_bytes</code> bounds the backlog [5][10].</div></div>
+<div class="use-case"><div class="label">Databases and latency-sensitive services</div><div class="desc">Lowering background thresholds makes flushing start earlier and run steadily, which avoids bursts that collide with fsync-heavy commits. wbt protects foreground reads during bulk loads [1][13].</div></div>
+<div class="use-case"><div class="label">Containers and multi-tenant hosts</div><div class="desc">cgroup v2 writeback gives each memory cgroup its own dirty domain and charges flush I/O to it. A noisy log writer then runs into its own limit rather than the host's [11].</div></div>
+<div class="use-case"><div class="label">FUSE and network filesystems</div><div class="desc"><code>strict_limit</code> and <code>max_ratio</code> keep an untrusted or stuck backend (FUSE daemon, hung NFS server) from holding most of the system's dirty memory [10].</div></div>
+<div class="use-case"><div class="label">Diagnosing write stalls</div><div class="desc">The <code>writeback:balance_dirty_pages</code> and <code>writeback:bdi_dirty_ratelimit</code> tracepoints show setpoints, rate limits and per-task pauses live, so you can tell throttling apart from slow I/O [15].</div></div>
+<div class="use-case"><div class="label">Bulk copy and backup jobs</div><div class="desc">With IO-less throttling, many concurrent <code>dd</code>/<code>rsync</code> streams share device bandwidth fairly (about write_bw/N each) and stay responsive to signals [3][4].</div></div>
+</div>
+
+<div class="callout"><strong>Tuning rule of thumb:</strong> think in time, not percentages. The worst-case backlog is roughly <code>dirty limit ÷ device write bandwidth</code>. A 20% limit on a 256 GB host can mean tens of GB of dirty data, which is minutes of writeback for a slow device. Byte-based limits and per-BDI caps keep that drain time bounded.</div>
+
+<div class="sources">
+<h2>References</h2>
+<ol>
+<li><a href="https://docs.kernel.org/admin-guide/sysctl/vm.html">Documentation for /proc/sys/vm/ (dirty_* sysctls), Linux kernel docs</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/mm/page-writeback.c">mm/page-writeback.c, Linux kernel source (pos_ratio_polynom, MAX_PAUSE, BANDWIDTH_INTERVAL, defaults)</a></li>
+<li><a href="https://lwn.net/Articles/456904/">Jonathan Corbet, "No-I/O dirty throttling", LWN, Aug 2011</a></li>
+<li><a href="https://kernelnewbies.org/Linux_3.2/">Linux 3.2 release notes: I/O-less dirty throttling, KernelNewbies</a></li>
+<li><a href="https://lwn.net/Articles/572911/">Jonathan Corbet, "The pernicious USB-stick stall problem", LWN, Nov 2013</a></li>
+<li><a href="https://lists.openwall.net/linux-kernel/2008/11/23/192">"[patch 2/2] mm: add dirty_background_bytes and dirty_bytes sysctls", LKML, Nov 2008</a></li>
+<li><a href="https://lwn.net/Articles/326552/">Goldwyn Rodrigues, "Flushing out pdflush", LWN, Apr 2009</a></li>
+<li><a href="https://lkml.iu.edu/1104.2/00063.html">Wu Fengguang, "[PATCH 07/12] writeback: base throttle bandwidth and position ratio", LKML</a></li>
+<li><a href="https://lwn.net/Articles/461410/">Wu Fengguang, "IO-less dirty throttling v12", patch series posting, LWN</a></li>
+<li><a href="https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-class-bdi">Documentation/ABI/testing/sysfs-class-bdi (min/max_ratio, max_bytes, strict_limit)</a></li>
+<li><a href="https://docs.kernel.org/admin-guide/cgroup-v2.html">Control Group v2: Writeback section, Linux kernel docs</a></li>
+<li><a href="https://lwn.net/Articles/682582/">Jonathan Corbet, "Toward less-annoying background writeback", LWN, 2016</a></li>
+<li><a href="https://github.com/torvalds/linux/commit/87760e5eef359788047d6fd54fc12eec74ce0d27">Jens Axboe, "block: hook up writeback throttling", commit 87760e5eef35</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/block/blk-wbt.c">block/blk-wbt.c, Linux kernel source</a></li>
+<li><a href="https://github.com/torvalds/linux/blob/master/include/trace/events/writeback.h">include/trace/events/writeback.h, Linux kernel source (balance_dirty_pages tracepoints)</a></li>
+</ol>
+</div>
+</body>
+</html>
